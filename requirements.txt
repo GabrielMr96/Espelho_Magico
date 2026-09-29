@@ -1,0 +1,11 @@
+python-dotenv
+rich
+markitdown
+google-genai
+google-api-python-client
+google-auth-httplib2
+google-auth-oauthlib
+groq
+requests
+# O Marker precisa ser instalado separadamente na máquina/venv, mas o wrapper de python fica aqui
+marker-pdf

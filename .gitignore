@@ -1,0 +1,19 @@
+# Ambientes e Secrets
+.env
+.venv/
+env/
+__pycache__/
+*.pyc
+
+# Tokens do Google
+credentials.json
+token.json
+
+# Logs
+*.log
+
+# Output e Cache do Script (Arquivos que não devem subir)
+resultados_markdown/
+espn_page.json
+controle_gol.json
+imagens_extraidas/
