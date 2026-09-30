@@ -475,17 +475,28 @@ def autenticar_drive():
 def upload_para_drive(service, caminho_arquivo, nome_arquivo):
     if not service:
         return
-    try:
-        nome_drive = nome_arquivo[:-3] if nome_arquivo.endswith('.md') else nome_arquivo
-        file_metadata = {'name': nome_drive}
-        media = MediaFileUpload(caminho_arquivo, mimetype='text/markdown')
         
-        console.print(f"[cyan]➜ [Drive] Fazendo upload de {nome_drive}...[/cyan]")
-        file = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-        console.print(f"[bold green]✔ Upload concluído! ID no Drive: {file.get('id')}[/bold green]")
-    except Exception as e:
-        logging.error(f"Erro no upload para o Drive ({nome_arquivo}): {e}")
-        console.print(f"[bold red]✖ Erro no upload para o Drive: {e}[/bold red]")
+    nome_drive = nome_arquivo[:-3] if nome_arquivo.endswith('.md') else nome_arquivo
+    file_metadata = {'name': nome_drive}
+    
+    max_tentativas = 3
+    for tentativa in range(1, max_tentativas + 1):
+        try:
+            # É recomendado instanciar o MediaFileUpload a cada tentativa para evitar problemas de cursor de arquivo
+            media = MediaFileUpload(caminho_arquivo, mimetype='text/markdown', resumable=True)
+            
+            console.print(f"[cyan]➜ [Drive] Fazendo upload de {nome_drive} (Tentativa {tentativa}/{max_tentativas})...[/cyan]")
+            # execute(num_retries=3) adiciona também o backoff interno da biblioteca do Google
+            file = service.files().create(body=file_metadata, media_body=media, fields='id').execute(num_retries=3)
+            console.print(f"[bold green]✔ Upload concluído! ID no Drive: {file.get('id')}[/bold green]")
+            return
+        except Exception as e:
+            logging.error(f"Erro no upload para o Drive ({nome_arquivo}) - Tentativa {tentativa}: {e}")
+            if tentativa < max_tentativas:
+                console.print(f"[yellow]⚠ Falha no upload: {e}. Tentando novamente em 5 segundos...[/yellow]")
+                time.sleep(5)
+            else:
+                console.print(f"[bold red]✖ Erro final no upload para o Drive após {max_tentativas} tentativas: {e}[/bold red]")
 
 MAPEAMENTO_PREFIXOS = {
     "bole": "Boletim Fora de Ordem",
