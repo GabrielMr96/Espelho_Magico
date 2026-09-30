@@ -476,7 +476,9 @@ def upload_para_drive(service, caminho_arquivo, nome_arquivo):
     if not service:
         return
         
-    nome_drive = nome_arquivo[:-3] if nome_arquivo.endswith('.md') else nome_arquivo
+    # Garante que qualquer extensão seja removida para o nome no Drive
+    import os
+    nome_drive = os.path.splitext(nome_arquivo)[0]
     file_metadata = {'name': nome_drive}
     
     max_tentativas = 3
@@ -485,18 +487,34 @@ def upload_para_drive(service, caminho_arquivo, nome_arquivo):
             # É recomendado instanciar o MediaFileUpload a cada tentativa para evitar problemas de cursor de arquivo
             media = MediaFileUpload(caminho_arquivo, mimetype='text/markdown', resumable=True)
             
-            console.print(f"[cyan]➜ [Drive] Fazendo upload de {nome_drive} (Tentativa {tentativa}/{max_tentativas})...[/cyan]")
-            # execute(num_retries=3) adiciona também o backoff interno da biblioteca do Google
-            file = service.files().create(body=file_metadata, media_body=media, fields='id').execute(num_retries=3)
-            console.print(f"[bold green]✔ Upload concluído! ID no Drive: {file.get('id')}[/bold green]")
+            # Verifica se o arquivo já existe no Drive (com ou sem a extensão .md)
+            query = f"name='{nome_drive}' or name='{nome_arquivo}'"
+            results = service.files().list(q=query, spaces='drive', fields='files(id, name)').execute()
+            items = results.get('files', [])
+            
+            if items:
+                # Atualiza o arquivo existente (mantém o ID e atualiza nome e conteúdo)
+                file_id = items[0]['id']
+                console.print(f"[cyan]➜ [Drive] Arquivo existente encontrado. Atualizando (ID: {file_id})...[/cyan]")
+                file = service.files().update(fileId=file_id, body=file_metadata, media_body=media, fields='id').execute(num_retries=3)
+                console.print(f"[bold green]✔ Atualização concluída! ID no Drive: {file.get('id')}[/bold green]")
+                
+                # Se houver duplicatas antigas, avisa o usuário
+                if len(items) > 1:
+                    console.print(f"[yellow]⚠ Aviso: Foram encontradas {len(items)-1} duplicatas antigas no Drive com esse nome. Apenas a primeira foi atualizada.[/yellow]")
+            else:
+                # Cria um novo arquivo caso não exista
+                console.print(f"[cyan]➜ [Drive] Fazendo upload de {nome_drive} (Tentativa {tentativa}/{max_tentativas})...[/cyan]")
+                file = service.files().create(body=file_metadata, media_body=media, fields='id').execute(num_retries=3)
+                console.print(f"[bold green]✔ Upload concluído! ID no Drive: {file.get('id')}[/bold green]")
             return
         except Exception as e:
-            logging.error(f"Erro no upload para o Drive ({nome_arquivo}) - Tentativa {tentativa}: {e}")
+            logging.error(f"Erro no upload/atualização para o Drive ({nome_arquivo}) - Tentativa {tentativa}: {e}")
             if tentativa < max_tentativas:
-                console.print(f"[yellow]⚠ Falha no upload: {e}. Tentando novamente em 5 segundos...[/yellow]")
+                console.print(f"[yellow]⚠ Falha no upload/atualização: {e}. Tentando novamente em 5 segundos...[/yellow]")
                 time.sleep(5)
             else:
-                console.print(f"[bold red]✖ Erro final no upload para o Drive após {max_tentativas} tentativas: {e}[/bold red]")
+                console.print(f"[bold red]✖ Erro final no upload/atualização para o Drive após {max_tentativas} tentativas: {e}[/bold red]")
 
 MAPEAMENTO_PREFIXOS = {
     "bole": "Boletim Fora de Ordem",
