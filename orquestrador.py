@@ -10,6 +10,7 @@ import datetime
 import subprocess
 import tempfile
 import shutil
+import base64
 from dotenv import load_dotenv
 from rich.console import Console
 from rich.panel import Panel
@@ -27,7 +28,6 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
-import groq
 import requests
 
 if sys.stdout.encoding != 'utf-8':
@@ -54,7 +54,6 @@ load_dotenv()
 # Validação de ambiente
 api_keys_str = os.environ.get("GEMINI_API_KEY", "")
 api_keys = [k.strip() for k in api_keys_str.split(",") if k.strip()]
-groq_api_key = os.environ.get("GROQ_API_KEY")
 perplexity_api_key = os.environ.get("PERPLEXITY_API_KEY")
 
 if not api_keys:
@@ -63,7 +62,6 @@ if not api_keys:
 
 clientes_gemini = [genai.Client(api_key=k) for k in api_keys]
 indice_cliente_atual = 0
-client_groq = groq.Groq(api_key=groq_api_key) if groq_api_key else None
 
 def converter_pdf_markitdown_limpo(caminho_pdf):
     """Lê o PDF com MarkItDown e aplica todas as limpezas de Regex na força bruta."""
@@ -202,14 +200,11 @@ def converter_pdf_com_fallback(caminho_pdf):
     console.print("[dim]  ✔ MarkItDown (extração com regex)[/dim]")
     return texto
 
-def extrair_com_perplexity(caminho_pdf, prompt):
+def extrair_com_perplexity(conteudo_html, prompt):
     if not perplexity_api_key:
         raise Exception("PERPLEXITY_API_KEY ausente.")
         
-    console.print(f"[cyan]➜ [1/2] Lendo e convertendo {caminho_pdf} para Perplexity...[/cyan]")
-    texto = converter_pdf_com_fallback(caminho_pdf)
-    
-    console.print(f"[cyan]➜ [2/2] Extraindo texto via Perplexity...[/cyan]")
+    console.print(f"[cyan]➜ Extraindo texto via Perplexity...[/cyan]")
     modelo_perplexity = os.environ.get("PERPLEXITY_MODEL", "sonar-pro")
     
     url = "https://api.perplexity.ai/chat/completions"
@@ -220,7 +215,7 @@ def extrair_com_perplexity(caminho_pdf, prompt):
     
     messages = [
         {"role": "system", "content": prompt},
-        {"role": "user", "content": f"Filtre e extraia os dados deste texto:\n\n{texto}"}
+        {"role": "user", "content": f"Filtre e extraia os dados deste conteúdo:\n\n{conteudo_html}"}
     ]
     
     payload = {
@@ -236,95 +231,22 @@ def extrair_com_perplexity(caminho_pdf, prompt):
         data = response.json()
         return data["choices"][0]["message"]["content"], None
     except Exception as e:
-        erro_detalhado = ""
-        if response is not None and hasattr(response, "text"):
-            erro_detalhado = response.text
+        erro_detalhado = response.text if response is not None and hasattr(response, "text") else ""
         raise Exception(f"Erro na API do Perplexity: {e} - {erro_detalhado}")
 
-def extrair_com_groq(caminho_pdf, prompt):
-    if not client_groq:
-        raise Exception("GROQ_API_KEY ausente.")
-        
-    console.print(f"[cyan]➜ [1/2] Lendo e convertendo {caminho_pdf} para Groq...[/cyan]")
-    texto = converter_pdf_com_fallback(caminho_pdf)
-    
-    # Dividir texto em chunks para evitar rate limit de TPM (Tokens per minute)
-    # Reduzindo para 3500 caracteres (aprox. 800 tokens) e dividindo por parágrafos
-    TAMANHO_MAX = 3500 
-    chunks = []
-    chunk_atual = ""
-    for paragrafo in texto.split("\n\n"):
-        if len(chunk_atual) + len(paragrafo) > TAMANHO_MAX:
-            chunks.append(chunk_atual)
-            chunk_atual = paragrafo + "\n\n"
-        else:
-            chunk_atual += paragrafo + "\n\n"
-    if chunk_atual:
-        chunks.append(chunk_atual)
-    
-    if len(chunks) > 1:
-        console.print(f"[yellow]  ⚠ O PDF convertido é muito grande. Dividido em {len(chunks)} partes. Haverá pausas de 1 min entre as partes (Rate Limit).[/yellow]")
-    
-    console.print(f"[cyan]➜ [2/2] Extraindo texto via Groq...[/cyan]")
-    texto_completo = ""
-    modelo_groq = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
-    
-    for i, chunk in enumerate(chunks):
-        if i > 0:
-            console.print(f"[yellow]  ⏳ Aguardando 61s para o reset do limite de TPM do Groq (Iniciando Parte {i+1}/{len(chunks)})...[/yellow]")
-            time.sleep(61)
-            
-        prompt_para_chunk = prompt
-        # O Groq não possui a ferramenta de busca do Google (google_search).
-        # Removemos a instrução em todas as partes para evitar erro 400 (tool_use_failed).
-        if "INSTRUÇÃO ADICIONAL EXCLUSIVA PARA ESTA EDIÇÃO:" in prompt_para_chunk:
-            prompt_para_chunk = prompt_para_chunk.split("INSTRUÇÃO ADICIONAL EXCLUSIVA PARA ESTA EDIÇÃO:")[0]
-            
-        messages = [
-            {"role": "system", "content": prompt_para_chunk},
-            {"role": "user", "content": f"Filtre e extraia os dados desta parte do texto:\n\n{chunk}"}
-        ]
-        
-        for continuacao in range(4): # Limite de continuações
-            chat_completion = client_groq.chat.completions.create(
-                messages=messages,
-                model=modelo_groq,
-                temperature=0.2,
-                max_tokens=2048,
-            )
-            msg_content = chat_completion.choices[0].message.content
-            texto_completo += msg_content + "\n\n"
-            
-            if chat_completion.choices[0].finish_reason != "length":
-                break
-                
-            console.print(f"[yellow]  ⚠ Cortado pelo limite. Aguardando 61s para o reset do TPM antes de continuar...[/yellow]")
-            messages.append({"role": "assistant", "content": msg_content})
-            messages.append({"role": "user", "content": "Continue exatamente de onde parou."})
-            time.sleep(61)
-            
-    return texto_completo, None
-
-def extrair_com_gemini(caminho_pdf, prompt, modelo_atual="gemini-2.5-flash"):
+def extrair_com_gemini(conteudo_html, prompt, modelo_atual="gemini-2.5-flash"):
     global indice_cliente_atual
-    
     ultimo_erro = "Erro desconhecido"
     
-    console.print(f"[cyan]➜ [1/2] Extraindo texto do PDF localmente (poupando cota de upload)...[/cyan]")
-    texto_pdf = converter_pdf_com_fallback(caminho_pdf)
-    
-    # Balanceamento Proativo (Round-Robin)
-    # A cada nova chamada de extração, alternamos para a próxima chave disponível
     if len(clientes_gemini) > 1:
         indice_cliente_atual = (indice_cliente_atual + 1) % len(clientes_gemini)
         
-    # Tentativas baseadas estritamente na quantidade de chaves.
     tentativas_maximas = len(clientes_gemini)
     
     for tentativa in range(1, tentativas_maximas + 1):
         cliente_atual = clientes_gemini[indice_cliente_atual]
         try:
-            console.print(f"[cyan]➜ [2/2] Processando com {modelo_atual} (Tentativa {tentativa}/{tentativas_maximas} | Chave {indice_cliente_atual + 1}/{len(clientes_gemini)})...[/cyan]")
+            console.print(f"[cyan]➜ Processando com {modelo_atual} (Tentativa {tentativa}/{tentativas_maximas} | Chave {indice_cliente_atual + 1}/{len(clientes_gemini)})...[/cyan]")
             config_kwargs = {
                 "system_instruction": prompt,
                 "temperature": 0.2,
@@ -334,7 +256,7 @@ def extrair_com_gemini(caminho_pdf, prompt, modelo_atual="gemini-2.5-flash"):
 
             response = cliente_atual.models.generate_content(
                 model=modelo_atual,
-                contents=[texto_pdf],
+                contents=[conteudo_html],
                 config=types.GenerateContentConfig(**config_kwargs)
             )
             return response.text, None, cliente_atual
@@ -361,12 +283,8 @@ def extrair_com_gemini(caminho_pdf, prompt, modelo_atual="gemini-2.5-flash"):
                 
     raise Exception(f"Todas as tentativas falharam para o {modelo_atual}. Motivo final: {ultimo_erro}")
 
-def processar_pdf_texto(caminho_pdf, prompt):
+def processar_conteudo_html(conteudo_html, prompt, chave_newsletter):
     texto_limpo = ""
-    arquivo_nuvem = None
-    cliente_usado = None
-    
-    logging.info(f"Processando {caminho_pdf}")
     
     modelos_para_testar = []
     modelo_env = os.environ.get("GEMINI_MODEL")
@@ -377,70 +295,45 @@ def processar_pdf_texto(caminho_pdf, prompt):
     if modelo_fallback:
         modelos_para_testar.append(modelo_fallback)
         
-    # Adicionando outros modelos gratuitos como fallback de segurança
-    modelos_para_testar.extend(["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemini-2.5-flash"])
-    
-    # Remover duplicatas mantendo a ordem
+    modelos_para_testar.extend(["gemini-2.5-flash", "gemini-2.5-flash-lite"])
     modelos_para_testar = list(dict.fromkeys(modelos_para_testar))
     
     ia_padrao = os.environ.get("IA_PADRAO", "gemini").lower()
     
-    # Força o uso do Perplexity para os arquivos do "Gol Contra"
-    if os.path.basename(caminho_pdf).lower().startswith("gol"):
+    # Roteamento cravado pro Gol Contra
+    if chave_newsletter == "gol":
         ia_padrao = "perplexity"
         
     if ia_padrao == "perplexity":
         try:
-            texto_limpo, _ = extrair_com_perplexity(caminho_pdf, prompt)
+            texto_limpo, _ = extrair_com_perplexity(conteudo_html, prompt)
             return texto_limpo
         except Exception as e:
-            console.print(f"[yellow]⚠ Erro no Perplexity (IA_PADRAO): {e}. Tentando Gemini como fallback...[/yellow]")
+            console.print(f"[yellow]⚠ Erro no Perplexity: {e}. Tentando Gemini como fallback...[/yellow]")
 
-    if ia_padrao == "groq":
+    for modelo in modelos_para_testar:
         try:
-            texto_limpo, _ = extrair_com_groq(caminho_pdf, prompt)
+            texto_limpo, _, _ = extrair_com_gemini(conteudo_html, prompt, modelo_atual=modelo)
             return texto_limpo
         except Exception as e:
-            console.print(f"[yellow]⚠ Erro no Groq (IA_PADRAO): {e}. Tentando Gemini como fallback...[/yellow]")
+            console.print(f"[yellow]  ⚠ Erro com modelo {modelo}: {e}. Tentando próxima versão...[/yellow]")
+            continue
             
-    try:
-        for modelo in modelos_para_testar:
-            try:
-                texto_limpo, arquivo_nuvem, cliente_usado = extrair_com_gemini(caminho_pdf, prompt, modelo_atual=modelo)
-                return texto_limpo
-            except Exception as e:
-                console.print(f"[yellow]  ⚠ Erro com modelo {modelo}: {e}. Tentando próxima versão...[/yellow]")
-                continue
-                
-        if ia_padrao != "groq":
-            msg_erro = f"⚠ Falha total em todos os modelos Gemini testados. Tentando Groq como último recurso..."
-            logging.warning(msg_erro)
-            console.print(f"[bold yellow]{msg_erro}[/bold yellow]")
-            
-            try:
-                texto_limpo, _ = extrair_com_groq(caminho_pdf, prompt)
-                return texto_limpo
-            except Exception as e:
-                msg_erro_final = f"❌ Erro bruto no Groq: {e}"
-                logging.error(msg_erro_final)
-                console.print(f"[bold red]✖[/bold red] {msg_erro_final}")
-                return "ERRO: Falha em todos os modelos (Gemini e Groq)."
-        else:
-            return "ERRO: Falha no Groq e no Gemini."
+    msg_erro = "⚠ Falha total em todos os modelos testados."
+    logging.warning(msg_erro)
+    console.print(f"[bold red]{msg_erro}[/bold red]")
+    return "ERRO: Falha na extração."
 
+# Lógica de Integração com Google Drive e Gmail
+SCOPES = [
+    'https://www.googleapis.com/auth/drive.file',
+    'https://www.googleapis.com/auth/gmail.modify'
+]
 
-    finally:
-        if arquivo_nuvem and cliente_usado:
-            try:
-                cliente_usado.files.delete(name=arquivo_nuvem.name)
-                logging.info(f"Arquivo removido do Google GenAI: {arquivo_nuvem.name}")
-            except Exception as e:
-                logging.error(f"Falha ao deletar arquivo na nuvem: {e}")
-
-# Lógica de Integração com Google Drive
-SCOPES = ['https://www.googleapis.com/auth/drive.file']
-
-def autenticar_drive():
+def autenticar_google():
+    """
+    Retorna os clients instanciados do Drive e do Gmail.
+    """
     creds = None
     if os.path.exists('token.json'):
         try:
@@ -461,16 +354,83 @@ def autenticar_drive():
                     
         if not creds or not creds.valid:
             if not os.path.exists('credentials.json'):
-                console.print("[yellow]⚠ credentials.json não encontrado na pasta do projeto. Upload para o Drive será ignorado.[/yellow]")
-                logging.warning("credentials.json não encontrado. Upload para o Drive desabilitado.")
-                return None
+                logging.error("credentials.json não encontrado. Autenticação abortada.")
+                raise FileNotFoundError("O arquivo credentials.json é obrigatório para rodar a automação do Google.")
             flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
             creds = flow.run_local_server(port=0)
             
         with open('token.json', 'w') as token:
             token.write(creds.to_json())
             
-    return build('drive', 'v3', credentials=creds)
+    try:
+        drive_service = build('drive', 'v3', credentials=creds)
+        gmail_service = build('gmail', 'v1', credentials=creds)
+        return drive_service, gmail_service
+    except Exception as e:
+        logging.error(f"Erro crítico ao instanciar APIs do Google: {e}")
+        raise
+
+def buscar_e_processar_emails(gmail_service):
+    """
+    Pesquisa e-mails não lidos na label especificada e extrai o payload em HTML.
+    """
+    query = "label:Espelho_Magico is:unread"
+    try:
+        resultados = gmail_service.users().messages().list(userId='me', q=query).execute()
+        mensagens = resultados.get('messages', [])
+        
+        if not mensagens:
+            console.print("[yellow]Nenhum e-mail novo encontrado no marcador Espelho_Magico.[/yellow]")
+            return []
+            
+        emails_processados = []
+        for msg in mensagens:
+            detalhes = gmail_service.users().messages().get(userId='me', id=msg['id'], format='full').execute()
+            payload = detalhes.get('payload', {})
+            
+            corpo_codificado = None
+            if 'parts' in payload:
+                for part in payload['parts']:
+                    if part['mimeType'] == 'text/html':
+                        corpo_codificado = part['body'].get('data')
+                        break
+                    elif 'parts' in part:
+                        for subpart in part['parts']:
+                            if subpart['mimeType'] == 'text/html':
+                                corpo_codificado = subpart['body'].get('data')
+                                break
+            else:
+                corpo_codificado = payload.get('body', {}).get('data')
+                
+            if corpo_codificado:
+                html_limpo = base64.urlsafe_b64decode(corpo_codificado).decode('utf-8')
+                headers = payload.get('headers', [])
+                assunto = next((h['value'] for h in headers if h['name'] == 'Subject'), "Newsletter_Sem_Assunto")
+                
+                emails_processados.append({
+                    "id": msg['id'],
+                    "assunto": assunto,
+                    "conteudo_html": html_limpo
+                })
+        return emails_processados
+    except Exception as e:
+        logging.error(f"Falha na comunicação com o Gmail: {e}")
+        console.print(f"[bold red]✖ Erro no Gmail: {e}[/bold red]")
+        return []
+
+def marcar_email_como_lido(gmail_service, msg_id):
+    """
+    Remove a flag UNREAD de um e-mail específico.
+    """
+    try:
+        gmail_service.users().messages().modify(
+            userId='me', 
+            id=msg_id, 
+            body={'removeLabelIds': ['UNREAD']}
+        ).execute()
+        logging.info(f"E-mail {msg_id} marcado como lido.")
+    except Exception as e:
+        logging.error(f"Erro ao marcar mensagem {msg_id} como lida: {e}")
 
 def upload_para_drive(service, caminho_arquivo, nome_arquivo):
     if not service:
@@ -589,16 +549,19 @@ def buscar_resultados_futebol(data_ontem_str, dia_semana_ontem):
         return f"⚠️ Erro ao buscar resultados na web: {e}"
 
 
-def processar_lote_pdfs():
+def processar_lote_emails():
     tempo_inicio_total = time.time()
-    console.print(Panel.fit("[bold cyan]Iniciando Extração com Espelho Mágico ✨[/bold cyan]"))
+    console.print(Panel.fit("[bold cyan]Iniciando Extração com Espelho Mágico ✨ (Modo E-mail)[/bold cyan]"))
     
-    pdfs = sorted(glob.glob("*.pdf"))
-    if not pdfs:
-        console.print("[yellow]Nenhum arquivo PDF encontrado no diretório.[/yellow]")
+    try:
+        drive_service, gmail_service = autenticar_google()
+    except Exception as e:
+        console.print(f"[bold red]Falha na autenticação do Google: {e}[/bold red]")
         return
-
-    drive_service = autenticar_drive()
+        
+    emails = buscar_e_processar_emails(gmail_service)
+    if not emails:
+        return
 
     prompt_espelho_magico = """
 Você é o framework Espelho Mágico, um EXTRATOR DE DADOS rigoroso.
@@ -632,7 +595,7 @@ REGRAS DE FORMATAÇÃO MARKDOWN:
 - Entregue o resultado EXCLUSIVAMENTE em Markdown limpo.
 - NÃO crie saudações ou conversas na resposta (ex: "Aqui está o texto..."). Vá direto ao ponto.
 - Use o nível 1 (`#`) APENAS para o título principal (Data do documento). Use nível 2 (`##`) ou inferior para as notícias.
-- Gere títulos únicos. Adicione contexto no título se houver repetição (ex: `## NBA - Lakers`).
+- Gere titles únicos. Adicione contexto no título se houver repetição (ex: `## NBA - Lakers`).
 - NUNCA repita o mesmo título de notícia. Se um texto foi quebrado e a notícia continua, prossiga organicamente sem inventar um novo cabeçalho.
 - NUNCA coloque pontuação no final dos títulos (ex: `!`, `?`, `.`).
 - Deixe sempre UMA linha em branco antes e depois de listas.
@@ -645,28 +608,28 @@ REGRAS DE FORMATAÇÃO MARKDOWN:
     pasta_resultados = "resultados_markdown"
     os.makedirs(pasta_resultados, exist_ok=True)
     
-    # Agrupar PDFs pelos prefixos
+    # Agrupar emails pelos prefixos no assunto
     grupos = {}
-    for pdf in pdfs:
-        nome_base = os.path.basename(pdf).lower()
+    for email in emails:
+        assunto = email['assunto'].lower()
         chave_encontrada = None
         for prefixo in MAPEAMENTO_PREFIXOS:
-            if nome_base.startswith(prefixo):
+            if assunto.startswith(prefixo):
                 chave_encontrada = prefixo
                 break
         
         if chave_encontrada:
             if chave_encontrada not in grupos:
                 grupos[chave_encontrada] = []
-            grupos[chave_encontrada].append(pdf)
+            grupos[chave_encontrada].append(email)
         else:
-            grupos[pdf] = [pdf] # Fallback: arquivo sem prefixo mapeado
+            grupos[assunto] = [email] # Fallback: email sem prefixo mapeado
             
     # Processar cada grupo
-    for chave, arquivos_grupo in grupos.items():
+    for chave, emails_grupo in grupos.items():
         if chave in MAPEAMENTO_PREFIXOS:
             titulo_base = MAPEAMENTO_PREFIXOS[chave]
-            console.print(f"\n[bold magenta]Encontrados os arquivos: {', '.join(arquivos_grupo)}[/bold magenta]")
+            console.print(f"\n[bold magenta]Encontrados e-mails para: {titulo_base}[/bold magenta]")
             
             padrao_busca = os.path.join(pasta_resultados, f"{titulo_base} #*.md")
             arquivos_existentes = glob.glob(padrao_busca)
@@ -691,21 +654,20 @@ REGRAS DE FORMATAÇÃO MARKDOWN:
                 
             nome_final = f"{titulo_base} #{numero.strip()}.md"
         else:
-            titulo_base = os.path.splitext(chave)[0]
+            titulo_base = re.sub(r'[\\/*?:"<>|]', "", chave)[:50]
             timestamp = time.strftime("%Y%m%d_%H%M%S")
             nome_final = f"{titulo_base}_{timestamp}.md"
             
         console.print(f"\n[bold blue]Processando para gerar: {nome_final}[/bold blue]")
         
         textos_grupo = []
-        for pdf in arquivos_grupo:
+        for email in emails_grupo:
             prompt_atual = prompt_espelho_magico
             texto_resultados = ""
+            
             if chave == "gol":
                 hoje = datetime.datetime.now()
                 ontem = hoje - datetime.timedelta(days=1)
-                
-                # Controle de datas já extraídas
                 arquivo_controle = "controle_gol.json"
                 ultima_data = None
                 
@@ -719,14 +681,12 @@ REGRAS DE FORMATAÇÃO MARKDOWN:
                     except Exception as e:
                         console.print(f"[yellow]⚠ Erro ao ler {arquivo_controle}: {e}[/yellow]")
 
-                # Se não tem histórico, ajusta para buscar apenas o "ontem" na primeira vez
                 if not ultima_data:
                     ultima_data = ontem.date() - datetime.timedelta(days=1)
 
                 datas_para_buscar = []
                 data_atual = ultima_data + datetime.timedelta(days=1)
                 
-                # Gera a lista de datas pendentes até ontem
                 while data_atual <= ontem.date():
                     datas_para_buscar.append(data_atual)
                     data_atual += datetime.timedelta(days=1)
@@ -743,35 +703,30 @@ REGRAS DE FORMATAÇÃO MARKDOWN:
                         
                 texto_resultados = "\n\n".join(resultados_lista)
                 
-                # Atualiza o arquivo de controle
                 try:
                     with open(arquivo_controle, 'w', encoding='utf-8') as f:
                         json.dump({"ultima_data_extraida": ontem.strftime("%Y-%m-%d")}, f)
                 except Exception as e:
                     console.print(f"[yellow]⚠ Erro ao salvar {arquivo_controle}: {e}[/yellow]")
-                
-                # Não altera o prompt principal (prompt_atual) para que ele foque APENAS em ler o PDF.
 
-            texto = processar_pdf_texto(pdf, prompt_atual)
+            texto = processar_conteudo_html(email['conteudo_html'], prompt_atual, chave)
             if texto and not str(texto).startswith("ERRO:"):
                 texto_final = (texto_resultados + "\n\n---\n\n" + texto.strip()) if texto_resultados else texto.strip()
                 textos_grupo.append(texto_final)
-            time.sleep(2) # Respiro entre arquivos
+            time.sleep(2)
             
         if textos_grupo:
             texto_final_mesclado = "\n\n---\n\n".join(textos_grupo)
             
-            # Pós-processamento inteligente contra MD024
             linhas = texto_final_mesclado.split("\n")
             linhas_processadas = []
             titulos_vistos = set()
             for linha in linhas:
-                # Se for um heading ## ou maior, rastrear repetições
                 match_heading = re.match(r'^(#{2,})\s+(.*)$', linha)
                 if match_heading:
                     titulo = match_heading.group(2).strip().lower()
                     if titulo in titulos_vistos:
-                        continue # Pula a linha se for um título duplicado
+                        continue
                     titulos_vistos.add(titulo)
                 linhas_processadas.append(linha)
             
@@ -788,17 +743,12 @@ REGRAS DE FORMATAÇÃO MARKDOWN:
             if drive_service:
                 upload_para_drive(drive_service, caminho_final, nome_final)
                 
-            for pdf in arquivos_grupo:
-                try:
-                    os.remove(pdf)
-                    console.print(f"[bold yellow]🗑️ Arquivo {pdf} excluído com sucesso.[/bold yellow]")
-                except Exception as e:
-                    console.print(f"[bold red]✖ Erro ao excluir o arquivo {pdf}: {e}[/bold red]")
+            for email in emails_grupo:
+                marcar_email_como_lido(gmail_service, email['id'])
         else:
             console.print(f"[bold red]✖ Falha ao gerar texto para {nome_final}[/bold red]")
             resultados.append(f"❌ Erro ao gerar {nome_final}")
 
-    # Resumo final com estatísticas de tempo
     tempo_total = time.time() - tempo_inicio_total
     minutos = int(tempo_total // 60)
     segundos = int(tempo_total % 60)
@@ -810,4 +760,4 @@ REGRAS DE FORMATAÇÃO MARKDOWN:
     logging.info(f"Processamento concluído em {minutos}min {segundos}s. {len(resultados)} grupo(s) processado(s).")
 
 if __name__ == "__main__":
-    processar_lote_pdfs()
+    processar_lote_emails()
