@@ -234,7 +234,7 @@ def extrair_com_perplexity(conteudo_html, prompt):
         erro_detalhado = response.text if response is not None and hasattr(response, "text") else ""
         raise Exception(f"Erro na API do Perplexity: {e} - {erro_detalhado}")
 
-def extrair_com_gemini(conteudo_html, prompt, modelo_atual="gemini-2.5-flash"):
+def extrair_com_gemini(conteudo_html, prompt, modelo_atual="gemini-3.5-flash"):
     global indice_cliente_atual
     ultimo_erro = "Erro desconhecido"
     
@@ -270,6 +270,11 @@ def extrair_com_gemini(conteudo_html, prompt, modelo_atual="gemini-2.5-flash"):
                 is_quota = "429" in erro_str or "RESOURCE_EXHAUSTED" in erro_str
                 ultimo_erro = "Cota Esgotada (Rate Limit / 429)" if is_quota else "Serviço Indisponível (503)"
                 
+                if not is_quota:
+                    # Se for erro 503, o problema é no servidor do modelo, não na chave. 
+                    # Lança a exceção direto para escalar para o próximo modelo imediatamente.
+                    raise Exception(f"{ultimo_erro}. Puxando próximo modelo da fila...")
+
                 if tentativa < tentativas_maximas:
                     console.print(f"[yellow]  ⚠ {ultimo_erro} na Chave {indice_cliente_atual + 1} no {modelo_atual}. Alternando para a próxima chave...[/yellow]")
                     indice_cliente_atual = (indice_cliente_atual + 1) % len(clientes_gemini)
@@ -295,13 +300,13 @@ def processar_conteudo_html(conteudo_html, prompt, chave_newsletter):
     if modelo_fallback:
         modelos_para_testar.append(modelo_fallback)
         
-    modelos_para_testar.extend(["gemini-2.5-flash", "gemini-2.5-flash-lite"])
+    modelos_para_testar.extend(["gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.8-flash"])
     modelos_para_testar = list(dict.fromkeys(modelos_para_testar))
     
     ia_padrao = os.environ.get("IA_PADRAO", "gemini").lower()
     
     # Roteamento cravado pro Gol Contra
-    if chave_newsletter == "gol":
+    if chave_newsletter == "tns sports":
         ia_padrao = "perplexity"
         
     if ia_padrao == "perplexity":
@@ -406,10 +411,12 @@ def buscar_e_processar_emails(gmail_service):
                 html_limpo = base64.urlsafe_b64decode(corpo_codificado).decode('utf-8')
                 headers = payload.get('headers', [])
                 assunto = next((h['value'] for h in headers if h['name'] == 'Subject'), "Newsletter_Sem_Assunto")
+                remetente = next((h['value'] for h in headers if h['name'] == 'From'), "Desconhecido")
                 
                 emails_processados.append({
                     "id": msg['id'],
                     "assunto": assunto,
+                    "remetente": remetente,
                     "conteudo_html": html_limpo
                 })
         return emails_processados
@@ -477,15 +484,15 @@ def upload_para_drive(service, caminho_arquivo, nome_arquivo):
                 console.print(f"[bold red]✖ Erro final no upload/atualização para o Drive após {max_tentativas} tentativas: {e}[/bold red]")
 
 MAPEAMENTO_PREFIXOS = {
-    "bole": "Boletim Fora de Ordem",
-    "fecha": "Fechamento de Caixa",
-    "diag": "Diagnóstico Sincero",
-    "gol": "Gol Contra",
-    "ata": "Ata de Reunião",
-    "aluci": "Alucinação Sintética",
-    "hack": "Hackeando o Problema",
-    "pipo": "Pipoca Vencida",
-    "contro": "Controle Quebrado",
+    "the news": "Boletim Fora de Ordem",
+    "tns money": "Fechamento de Caixa",
+    "tns health": "Diagnóstico Sincero",
+    "tns sports": "Gol Contra",
+    "tns business": "Ata de Reunião",
+    "aidrops": "Alucinação Sintética",
+    "notícias de segurança": "Hackeando o Problema",
+    "notícias de entretenimento": "Pipoca Vencida",
+    "notícias de games": "Controle Quebrado",
     "peak": "The Out of Order Dispatch",
 }
 
@@ -612,9 +619,10 @@ REGRAS DE FORMATAÇÃO MARKDOWN:
     grupos = {}
     for email in emails:
         assunto = email['assunto'].lower()
+        remetente = email.get('remetente', '').lower()
         chave_encontrada = None
         for prefixo in MAPEAMENTO_PREFIXOS:
-            if assunto.startswith(prefixo):
+            if prefixo in remetente or assunto.startswith(prefixo):
                 chave_encontrada = prefixo
                 break
         
@@ -661,11 +669,12 @@ REGRAS DE FORMATAÇÃO MARKDOWN:
         console.print(f"\n[bold blue]Processando para gerar: {nome_final}[/bold blue]")
         
         textos_grupo = []
+        emails_sucesso = []
         for email in emails_grupo:
             prompt_atual = prompt_espelho_magico
             texto_resultados = ""
             
-            if chave == "gol":
+            if chave == "tns sports":
                 hoje = datetime.datetime.now()
                 ontem = hoje - datetime.timedelta(days=1)
                 arquivo_controle = "controle_gol.json"
@@ -713,6 +722,7 @@ REGRAS DE FORMATAÇÃO MARKDOWN:
             if texto and not str(texto).startswith("ERRO:"):
                 texto_final = (texto_resultados + "\n\n---\n\n" + texto.strip()) if texto_resultados else texto.strip()
                 textos_grupo.append(texto_final)
+                emails_sucesso.append(email)
             time.sleep(2)
             
         if textos_grupo:
@@ -743,7 +753,7 @@ REGRAS DE FORMATAÇÃO MARKDOWN:
             if drive_service:
                 upload_para_drive(drive_service, caminho_final, nome_final)
                 
-            for email in emails_grupo:
+            for email in emails_sucesso:
                 marcar_email_como_lido(gmail_service, email['id'])
         else:
             console.print(f"[bold red]✖ Falha ao gerar texto para {nome_final}[/bold red]")
