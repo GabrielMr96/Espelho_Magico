@@ -404,19 +404,18 @@ def buscar_e_processar_emails(gmail_service):
             detalhes = gmail_service.users().messages().get(userId='me', id=msg['id'], format='full').execute()
             payload = detalhes.get('payload', {})
             
-            corpo_codificado = None
-            if 'parts' in payload:
-                for part in payload['parts']:
-                    if part['mimeType'] == 'text/html':
-                        corpo_codificado = part['body'].get('data')
-                        break
-                    elif 'parts' in part:
-                        for subpart in part['parts']:
-                            if subpart['mimeType'] == 'text/html':
-                                corpo_codificado = subpart['body'].get('data')
-                                break
-            else:
-                corpo_codificado = payload.get('body', {}).get('data')
+            def get_html_body(payload_part):
+                if payload_part.get('mimeType') == 'text/html':
+                    return payload_part.get('body', {}).get('data')
+                if 'parts' in payload_part:
+                    for part in payload_part['parts']:
+                        res = get_html_body(part)
+                        if res:
+                            return res
+                return payload_part.get('body', {}).get('data') if not payload_part.get('parts') else None
+
+            corpo_codificado = get_html_body(payload)
+                
                 
             if corpo_codificado:
                 html_limpo = base64.urlsafe_b64decode(corpo_codificado).decode('utf-8')
@@ -585,6 +584,8 @@ def processar_lote_emails():
 Você é o framework Espelho Mágico, um EXTRATOR DE DADOS rigoroso.
 Sua única missão é analisar este documento (newsletter) e extrair o conteúdo informativo (títulos, notícias, agendas, quick takes e enquetes), removendo todo o resto.
 O resultado alimentará um podcast gerado por IA (NotebookLM).
+
+CRÍTICO: EXTRAIA ABSOLUTAMENTE TODAS AS NOTÍCIAS. NÃO PARE NO MEIO DO DOCUMENTO. PERCORRA O HTML ATÉ O FINAL E GARANTA QUE NENHUMA NOTÍCIA FIQUE DE FORA!
 
 CRITÉRIO ZERO (PROIBIDO RESUMIR):
 - Você NÃO É um redator. Você é um EXTRATOR. 
