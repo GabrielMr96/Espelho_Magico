@@ -234,7 +234,7 @@ def extrair_com_perplexity(conteudo_html, prompt):
         erro_detalhado = response.text if response is not None and hasattr(response, "text") else ""
         raise Exception(f"Erro na API do Perplexity: {e} - {erro_detalhado}")
 
-def extrair_com_gemini(conteudo_html, prompt, modelo_atual="gemini-3.5-flash"):
+def extrair_com_gemini(conteudo_html, prompt, modelo_atual="gemini-3.8-flash"):
     global indice_cliente_atual
     ultimo_erro = "Erro desconhecido"
     
@@ -272,7 +272,8 @@ def extrair_com_gemini(conteudo_html, prompt, modelo_atual="gemini-3.5-flash"):
                 
                 if not is_quota:
                     # Se for erro 503, o problema é no servidor do modelo, não na chave. 
-                    # Lança a exceção direto para escalar para o próximo modelo imediatamente.
+                    # Espera um pouco antes de escalar para o próximo modelo.
+                    time.sleep(5)
                     raise Exception(f"{ultimo_erro}. Puxando próximo modelo da fila...")
 
                 if tentativa < tentativas_maximas:
@@ -300,7 +301,17 @@ def processar_conteudo_html(conteudo_html, prompt, chave_newsletter):
     if modelo_fallback:
         modelos_para_testar.append(modelo_fallback)
         
-    modelos_para_testar.extend(["gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.8-flash"])
+    modelos_para_testar.extend([
+        "gemini-3.8-flash",
+        "gemini-3.7-flash",
+        "gemini-3.6-flash",
+        "gemini-3.5-flash",
+        "gemini-3.1-flash-lite",
+        "gemini-2.5-flash",
+        "gemini-2.5-pro",
+        "gemini-flash-latest",
+        "gemini-pro-latest"
+    ])
     modelos_para_testar = list(dict.fromkeys(modelos_para_testar))
     
     ia_padrao = os.environ.get("IA_PADRAO", "gemini").lower()
