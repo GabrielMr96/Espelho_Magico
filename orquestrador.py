@@ -680,62 +680,96 @@ REGRAS DE FORMATAÇÃO MARKDOWN:
             
         console.print(f"\n[bold blue]Processando para gerar: {nome_final}[/bold blue]")
         
+        unificar_inteligente = False
+        if len(emails_grupo) >= 2 and sys.stdin.isatty():
+            console.print(f"\n[bold yellow]Foram encontrados {len(emails_grupo)} e-mails para '{titulo_base}'.[/bold yellow]")
+            resposta = input("▶ Deseja unificar a extração de forma inteligente em um único texto (mesclando assuntos e evitando repetições)? (S/N): ").strip().lower()
+            if resposta == 's':
+                unificar_inteligente = True
+
         textos_grupo = []
         emails_sucesso = []
-        for email in emails_grupo:
-            prompt_atual = prompt_espelho_magico
-            texto_resultados = ""
+        
+        # Lógica do Gol Contra (tns sports) rodada apenas uma vez por grupo
+        texto_resultados_grupo = ""
+        if chave == "tns sports":
+            hoje = datetime.datetime.now()
+            ontem = hoje - datetime.timedelta(days=1)
+            arquivo_controle = "controle_gol.json"
+            ultima_data = None
             
-            if chave == "tns sports":
-                hoje = datetime.datetime.now()
-                ontem = hoje - datetime.timedelta(days=1)
-                arquivo_controle = "controle_gol.json"
-                ultima_data = None
-                
-                if os.path.exists(arquivo_controle):
-                    try:
-                        with open(arquivo_controle, 'r', encoding='utf-8') as f:
-                            dados_controle = json.load(f)
-                            ultima_data_str = dados_controle.get("ultima_data_extraida")
-                            if ultima_data_str:
-                                ultima_data = datetime.datetime.strptime(ultima_data_str, "%Y-%m-%d").date()
-                    except Exception as e:
-                        console.print(f"[yellow]⚠ Erro ao ler {arquivo_controle}: {e}[/yellow]")
-
-                if not ultima_data:
-                    ultima_data = ontem.date() - datetime.timedelta(days=1)
-
-                datas_para_buscar = []
-                data_atual = ultima_data + datetime.timedelta(days=1)
-                
-                while data_atual <= ontem.date():
-                    datas_para_buscar.append(data_atual)
-                    data_atual += datetime.timedelta(days=1)
-
-                resultados_lista = []
-                dias_semana = ["segunda-feira", "terça-feira", "quarta-feira", "quinta-feira", "sexta-feira", "sábado", "domingo"]
-                
-                for data_busca in datas_para_buscar:
-                    data_str_br = data_busca.strftime("%d/%m/%Y")
-                    dia_semana = dias_semana[data_busca.weekday()]
-                    resultado_dia = buscar_resultados_futebol(data_str_br, dia_semana)
-                    if resultado_dia:
-                        resultados_lista.append(resultado_dia)
-                        
-                texto_resultados = "\n\n".join(resultados_lista)
-                
+            if os.path.exists(arquivo_controle):
                 try:
-                    with open(arquivo_controle, 'w', encoding='utf-8') as f:
-                        json.dump({"ultima_data_extraida": ontem.strftime("%Y-%m-%d")}, f)
+                    with open(arquivo_controle, 'r', encoding='utf-8') as f:
+                        dados_controle = json.load(f)
+                        ultima_data_str = dados_controle.get("ultima_data_extraida")
+                        if ultima_data_str:
+                            ultima_data = datetime.datetime.strptime(ultima_data_str, "%Y-%m-%d").date()
                 except Exception as e:
-                    console.print(f"[yellow]⚠ Erro ao salvar {arquivo_controle}: {e}[/yellow]")
+                    console.print(f"[yellow]⚠ Erro ao ler {arquivo_controle}: {e}[/yellow]")
 
-            texto = processar_conteudo_html(email['conteudo_html'], prompt_atual, chave)
+            if not ultima_data:
+                ultima_data = ontem.date() - datetime.timedelta(days=1)
+
+            datas_para_buscar = []
+            data_atual = ultima_data + datetime.timedelta(days=1)
+            
+            while data_atual <= ontem.date():
+                datas_para_buscar.append(data_atual)
+                data_atual += datetime.timedelta(days=1)
+
+            resultados_lista = []
+            dias_semana = ["segunda-feira", "terça-feira", "quarta-feira", "quinta-feira", "sexta-feira", "sábado", "domingo"]
+            
+            for data_busca in datas_para_buscar:
+                data_str_br = data_busca.strftime("%d/%m/%Y")
+                dia_semana = dias_semana[data_busca.weekday()]
+                resultado_dia = buscar_resultados_futebol(data_str_br, dia_semana)
+                if resultado_dia:
+                    resultados_lista.append(resultado_dia)
+                    
+            texto_resultados_grupo = "\n\n".join(resultados_lista)
+            
+            try:
+                with open(arquivo_controle, 'w', encoding='utf-8') as f:
+                    json.dump({"ultima_data_extraida": ontem.strftime("%Y-%m-%d")}, f)
+            except Exception as e:
+                console.print(f"[yellow]⚠ Erro ao salvar {arquivo_controle}: {e}[/yellow]")
+
+        if unificar_inteligente:
+            prompt_atual = prompt_espelho_magico + """
+
+ATENÇÃO - MODO UNIFICAÇÃO INTELIGENTE:
+Foram fornecidas MÚLTIPLAS edições desta newsletter abaixo (separadas por "--- INÍCIO DA EDIÇÃO ---").
+Sua missão adicional é:
+- Unificar as notícias comuns e organizá-las de forma coesa.
+- NÃO repetir a mesma notícia ou assuntos idênticos. Se duas edições falarem do mesmo tema, faça a fusão completa das informações.
+- Manter o rigor de não resumir ou alterar os fatos originais, mas agrupar informações que se complementam.
+- Garantir que o resultado final pareça uma única edição compilada e completa, sem redundâncias.
+"""
+            conteudo_combinado = ""
+            for i, email in enumerate(emails_grupo):
+                conteudo_combinado += f"\n\n--- INÍCIO DA EDIÇÃO {i+1} ---\n\n{email['conteudo_html']}"
+            
+            console.print(f"[cyan]➜ Enviando {len(emails_grupo)} e-mails agrupados para extração unificada...[/cyan]")
+            texto = processar_conteudo_html(conteudo_combinado, prompt_atual, chave)
             if texto and not str(texto).startswith("ERRO:"):
-                texto_final = (texto_resultados + "\n\n---\n\n" + texto.strip()) if texto_resultados else texto.strip()
+                texto_final = (texto_resultados_grupo + "\n\n---\n\n" + texto.strip()) if texto_resultados_grupo else texto.strip()
                 textos_grupo.append(texto_final)
-                emails_sucesso.append(email)
-            time.sleep(2)
+                emails_sucesso.extend(emails_grupo)
+        else:
+            for i, email in enumerate(emails_grupo):
+                prompt_atual = prompt_espelho_magico
+                texto = processar_conteudo_html(email['conteudo_html'], prompt_atual, chave)
+                if texto and not str(texto).startswith("ERRO:"):
+                    # Adiciona texto_resultados_grupo apenas no primeiro e-mail (para não repetir)
+                    if i == 0 and texto_resultados_grupo:
+                        texto_final = texto_resultados_grupo + "\n\n---\n\n" + texto.strip()
+                    else:
+                        texto_final = texto.strip()
+                    textos_grupo.append(texto_final)
+                    emails_sucesso.append(email)
+                time.sleep(2)
             
         if textos_grupo:
             texto_final_mesclado = "\n\n---\n\n".join(textos_grupo)
