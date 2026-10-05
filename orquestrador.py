@@ -15,6 +15,12 @@ from dotenv import load_dotenv
 from rich.console import Console
 from rich.panel import Panel
 from markitdown import MarkItDown
+import concurrent.futures
+from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn, BarColumn, TaskProgressColumn
+from threading import Lock
+
+# Trava para evitar que os logs de múltiplas threads se embaralhem no console
+print_lock = Lock()
 
 # Novos imports da SDK do Google GenAI
 from google import genai
@@ -336,19 +342,19 @@ def processar_conteudo_html(conteudo_html, prompt, chave_newsletter):
             texto_limpo, _ = extrair_com_perplexity(conteudo_html, prompt)
             return texto_limpo
         except Exception as e:
-            console.print(f"[yellow]⚠ Erro no Perplexity: {e}. Tentando Gemini como fallback...[/yellow]")
+            with print_lock: console.print(f"[yellow]⚠ Erro no Perplexity: {e}. Tentando Gemini como fallback...[/yellow]")
 
     for modelo in modelos_para_testar:
         try:
             texto_limpo, _, _ = extrair_com_gemini(conteudo_html, prompt, modelo_atual=modelo)
             return texto_limpo
         except Exception as e:
-            console.print(f"[yellow]  ⚠ Erro com modelo {modelo}: {e}. Tentando próxima versão...[/yellow]")
+            with print_lock: console.print(f"[yellow]  ⚠ Erro com modelo {modelo}: {e}. Tentando próxima versão...[/yellow]")
             continue
             
     msg_erro = "⚠ Falha total em todos os modelos testados."
     logging.warning(msg_erro)
-    console.print(f"[bold red]{msg_erro}[/bold red]")
+    with print_lock: console.print(f"[bold red]{msg_erro}[/bold red]")
     return "ERRO: Falha na extração."
 
 # Lógica de Integração com Google Drive e Gmail
@@ -698,57 +704,58 @@ REGRAS DE FORMATAÇÃO MARKDOWN:
             if resposta == 's':
                 unificar_inteligente = True
 
-        textos_grupo = []
-        emails_sucesso = []
+def processar_grupo_isolado(chave, emails_grupo, titulo_base, nome_final, unificar_inteligente, pasta_resultados, prompt_espelho_magico, drive_service, gmail_service):
+    textos_grupo = []
+    emails_sucesso = []
+    
+    # Lógica do Gol Contra (tns sports) rodada apenas uma vez por grupo
+    texto_resultados_grupo = ""
+    if chave == "tns sports":
+        hoje = datetime.datetime.now()
+        ontem = hoje - datetime.timedelta(days=1)
+        arquivo_controle = "controle_gol.json"
+        ultima_data = None
         
-        # Lógica do Gol Contra (tns sports) rodada apenas uma vez por grupo
-        texto_resultados_grupo = ""
-        if chave == "tns sports":
-            hoje = datetime.datetime.now()
-            ontem = hoje - datetime.timedelta(days=1)
-            arquivo_controle = "controle_gol.json"
-            ultima_data = None
-            
-            if os.path.exists(arquivo_controle):
-                try:
-                    with open(arquivo_controle, 'r', encoding='utf-8') as f:
-                        dados_controle = json.load(f)
-                        ultima_data_str = dados_controle.get("ultima_data_extraida")
-                        if ultima_data_str:
-                            ultima_data = datetime.datetime.strptime(ultima_data_str, "%Y-%m-%d").date()
-                except Exception as e:
-                    console.print(f"[yellow]⚠ Erro ao ler {arquivo_controle}: {e}[/yellow]")
-
-            if not ultima_data:
-                ultima_data = ontem.date() - datetime.timedelta(days=1)
-
-            datas_para_buscar = []
-            data_atual = ultima_data + datetime.timedelta(days=1)
-            
-            while data_atual <= ontem.date():
-                datas_para_buscar.append(data_atual)
-                data_atual += datetime.timedelta(days=1)
-
-            resultados_lista = []
-            dias_semana = ["segunda-feira", "terça-feira", "quarta-feira", "quinta-feira", "sexta-feira", "sábado", "domingo"]
-            
-            for data_busca in datas_para_buscar:
-                data_str_br = data_busca.strftime("%d/%m/%Y")
-                dia_semana = dias_semana[data_busca.weekday()]
-                resultado_dia = buscar_resultados_futebol(data_str_br, dia_semana)
-                if resultado_dia:
-                    resultados_lista.append(resultado_dia)
-                    
-            texto_resultados_grupo = "\n\n".join(resultados_lista)
-            
+        if os.path.exists(arquivo_controle):
             try:
-                with open(arquivo_controle, 'w', encoding='utf-8') as f:
-                    json.dump({"ultima_data_extraida": ontem.strftime("%Y-%m-%d")}, f)
+                with open(arquivo_controle, 'r', encoding='utf-8') as f:
+                    dados_controle = json.load(f)
+                    ultima_data_str = dados_controle.get("ultima_data_extraida")
+                    if ultima_data_str:
+                        ultima_data = datetime.datetime.strptime(ultima_data_str, "%Y-%m-%d").date()
             except Exception as e:
-                console.print(f"[yellow]⚠ Erro ao salvar {arquivo_controle}: {e}[/yellow]")
+                with print_lock: console.print(f"[yellow]⚠ Erro ao ler {arquivo_controle}: {e}[/yellow]")
 
-        if unificar_inteligente:
-            prompt_atual = prompt_espelho_magico + """
+        if not ultima_data:
+            ultima_data = ontem.date() - datetime.timedelta(days=1)
+
+        datas_para_buscar = []
+        data_atual = ultima_data + datetime.timedelta(days=1)
+        
+        while data_atual <= ontem.date():
+            datas_para_buscar.append(data_atual)
+            data_atual += datetime.timedelta(days=1)
+
+        resultados_lista = []
+        dias_semana = ["segunda-feira", "terça-feira", "quarta-feira", "quinta-feira", "sexta-feira", "sábado", "domingo"]
+        
+        for data_busca in datas_para_buscar:
+            data_str_br = data_busca.strftime("%d/%m/%Y")
+            dia_semana = dias_semana[data_busca.weekday()]
+            resultado_dia = buscar_resultados_futebol(data_str_br, dia_semana)
+            if resultado_dia:
+                resultados_lista.append(resultado_dia)
+                
+        texto_resultados_grupo = "\n\n".join(resultados_lista)
+        
+        try:
+            with open(arquivo_controle, 'w', encoding='utf-8') as f:
+                json.dump({"ultima_data_extraida": ontem.strftime("%Y-%m-%d")}, f)
+        except Exception as e:
+            with print_lock: console.print(f"[yellow]⚠ Erro ao salvar {arquivo_controle}: {e}[/yellow]")
+
+    if unificar_inteligente:
+        prompt_atual = prompt_espelho_magico + """
 
 ATENÇÃO - MODO UNIFICAÇÃO INTELIGENTE:
 Foram fornecidas MÚLTIPLAS edições desta newsletter abaixo (separadas por "--- INÍCIO DA EDIÇÃO ---").
@@ -758,63 +765,232 @@ Sua missão adicional é:
 - Manter o rigor de não resumir ou alterar os fatos originais, mas agrupar informações que se complementam.
 - Garantir que o resultado final pareça uma única edição compilada e completa, sem redundâncias.
 """
-            conteudo_combinado = ""
-            for i, email in enumerate(emails_grupo):
-                conteudo_combinado += f"\n\n--- INÍCIO DA EDIÇÃO {i+1} ---\n\n{email['conteudo_html']}"
-            
-            console.print(f"[cyan]➜ Enviando {len(emails_grupo)} e-mails agrupados para extração unificada...[/cyan]")
-            texto = processar_conteudo_html(conteudo_combinado, prompt_atual, chave)
+        conteudo_combinado = ""
+        for i, email in enumerate(emails_grupo):
+            conteudo_combinado += f"\n\n--- INÍCIO DA EDIÇÃO {i+1} ---\n\n{email['conteudo_html']}"
+        
+        with print_lock: console.print(f"[cyan]➜ Enviando {len(emails_grupo)} e-mails agrupados para extração unificada ({titulo_base})...[/cyan]")
+        texto = processar_conteudo_html(conteudo_combinado, prompt_atual, chave)
+        if texto and not str(texto).startswith("ERRO:"):
+            texto_final = (texto_resultados_grupo + "\n\n---\n\n" + texto.strip()) if texto_resultados_grupo else texto.strip()
+            textos_grupo.append(texto_final)
+            emails_sucesso.extend(emails_grupo)
+    else:
+        for i, email in enumerate(emails_grupo):
+            prompt_atual = prompt_espelho_magico
+            texto = processar_conteudo_html(email['conteudo_html'], prompt_atual, chave)
             if texto and not str(texto).startswith("ERRO:"):
-                texto_final = (texto_resultados_grupo + "\n\n---\n\n" + texto.strip()) if texto_resultados_grupo else texto.strip()
+                # Adiciona texto_resultados_grupo apenas no primeiro e-mail (para não repetir)
+                if i == 0 and texto_resultados_grupo:
+                    texto_final = texto_resultados_grupo + "\n\n---\n\n" + texto.strip()
+                else:
+                    texto_final = texto.strip()
                 textos_grupo.append(texto_final)
-                emails_sucesso.extend(emails_grupo)
+                emails_sucesso.append(email)
+            time.sleep(2)
+        
+    if textos_grupo:
+        texto_final_mesclado = "\n\n---\n\n".join(textos_grupo)
+        
+        linhas = texto_final_mesclado.split("\n")
+        linhas_processadas = []
+        titulos_vistos = set()
+        for linha in linhas:
+            match_heading = re.match(r'^(#{2,})\s+(.*)$', linha)
+            if match_heading:
+                titulo = match_heading.group(2).strip().lower()
+                if titulo in titulos_vistos:
+                    continue
+                titulos_vistos.add(titulo)
+            linhas_processadas.append(linha)
+        
+        texto_final_mesclado = "\n".join(linhas_processadas)
+        
+        caminho_final = os.path.join(pasta_resultados, nome_final)
+        
+        with open(caminho_final, "w", encoding="utf-8") as f:
+            f.write(texto_final_mesclado + "\n")
+            
+        with print_lock: console.print(f"[bold green]✔[/bold green] Salvo: [bold]{caminho_final}[/bold]")
+        
+        if drive_service:
+            upload_para_drive(drive_service, caminho_final, nome_final)
+            
+        for email in emails_sucesso:
+            marcar_email_como_lido(gmail_service, email['id'])
+            
+        return f"✅ {nome_final} gerado com sucesso!"
+    else:
+        with print_lock: console.print(f"[bold red]✖ Falha ao gerar texto para {nome_final}[/bold red]")
+        return f"❌ Erro ao gerar {nome_final}"
+
+def processar_lote_emails():
+    tempo_inicio_total = time.time()
+    console.print(Panel.fit("[bold cyan]Iniciando Extração com Espelho Mágico ✨ (Modo E-mail e Multithread)[/bold cyan]"))
+    
+    try:
+        drive_service, gmail_service = autenticar_google()
+    except Exception as e:
+        console.print(f"[bold red]Falha na autenticação do Google: {e}[/bold red]")
+        return
+        
+    emails = buscar_e_processar_emails(gmail_service)
+    if not emails:
+        return
+
+    prompt_espelho_magico = """
+Você é o framework Espelho Mágico, um EXTRATOR DE DADOS rigoroso.
+Sua única missão é analisar este documento (newsletter) e extrair o conteúdo informativo (títulos, notícias, agendas, quick takes e enquetes), removendo todo o resto.
+O resultado alimentará um podcast gerado por IA (NotebookLM).
+
+CRÍTICO: EXTRAIA ABSOLUTAMENTE TODAS AS NOTÍCIAS. NÃO PARE NO MEIO DO DOCUMENTO. PERCORRA O HTML ATÉ O FINAL E GARANTA QUE NENHUMA NOTÍCIA FIQUE DE FORA!
+
+CRITÉRIO ZERO (PROIBIDO RESUMIR):
+- Você NÃO É um redator. Você é um EXTRATOR. 
+- NUNCA resuma, reescreva, condense, parafraseie ou altere as palavras originais das notícias.
+- A extração do texto da notícia DEVE SER UMA CÓPIA LITERAL (ipsis litteris) e na íntegra. Copie e cole o texto original. Se alterar uma palavra, você falhou.
+- EXCEÇÃO DE FORMATAÇÃO: O PDF frequentemente quebra as linhas no meio das frases. Você DEVE juntar essas quebras de linha artificiais para formar parágrafos contínuos, fluidos e normais. Não deixe frases cortadas ao meio por quebras de linha (`\n`).
+
+REGRAS DE FILTRAGEM (O QUE IGNORAR COMPLETAMENTE):
+- EXCLUA a seção/notícia INTEIRA APENAS SE for uma manchete muito curta ("isca de clique") que depende de um link para fazer sentido ("LEIA MAIS AQUI", "No que estamos clicando"). Se a notícia for completa e detalhada, mas apenas tiver um link "(Aprofunde)" ou "Leia mais" no final, MANTENHA a notícia toda e APAGUE APENAS o texto do link.
+- EXCLUA qualquer texto/imagem que seja publicidade, patrocínio, venda de produtos, propagandas ("oferecimento", "Apresentado por").
+- EXCLUA cabeçalhos, rodapés, números de página, textos legais, e links de redes sociais.
+- EXCLUA saudações diárias (ex: "Bom dia", "Boa noite"), introduções pessoais/filosóficas dos editores, e a seção "OPINIÃO DO LEITOR" (ou qualquer enquete sobre a própria newsletter).
+- EXCLUA cabeçalhos de e-mail completos (remetente, destinatário, data, assunto, "Leia Online", "Responder a:").
+- EXCLUA seções de entretenimento vazio sem substância noticiosa: "AROUND THE WEB", "DESCONTRAIR", "DÊNIUS GAMES", "RECADO DO TIME" e equivalentes.
+- EXCLUA "PROGRAMA DE INDICAÇÃO", links de indicação pessoal ("Seu link pessoal:"), e qualquer seção "QUEM SOMOS" ou descrição da própria newsletter.
+- EXCLUA boas-vindas a novos assinantes (ex: "Boas-vindas às X novas pessoas...") e CTAs de venda de assinatura (ex: "Assine a PRO para continuar lendo").
+- EXCLUA "NA EDIÇÃO DE HOJE" (lista de manchetes resumidas no início) — o conteúdo completo já virá nas seções seguintes.
+- MANTENHA as seções de "QUICK TAKES", "AGENDA DO DIA", "ENQUETE DO DIA" e os "RESULTADOS" de enquetes (desde que sejam sobre esportes ou notícias factuais). Copie-as exatamente como estão.
+
+TRATAMENTO DE IMAGENS:
+- Para cada imagem de uma notícia mantida, crie uma descrição rica, vívida e detalhada.
+- Formato obrigatório: `[Descrição da Imagem: detalhamento da cena e textos dentro da imagem...]`
+- Ignore imagens que sejam apenas logotipos soltos, patrocinadores ou grafismos decorativos.
+
+REGRAS DE FORMATAÇÃO MARKDOWN:
+- Entregue o resultado EXCLUSIVAMENTE em Markdown limpo.
+- NÃO crie saudações ou conversas na resposta (ex: "Aqui está o texto..."). Vá direto ao ponto.
+- Use o nível 1 (`#`) APENAS para o título principal (Data do documento). Use nível 2 (`##`) ou inferior para as notícias.
+- Gere titles únicos. Adicione contexto no título se houver repetição (ex: `## NBA - Lakers`).
+- NUNCA repita o mesmo título de notícia. Se um texto foi quebrado e a notícia continua, prossiga organicamente sem inventar um novo cabeçalho.
+- NUNCA coloque pontuação no final dos títulos (ex: `!`, `?`, `.`).
+- Deixe sempre UMA linha em branco antes e depois de listas.
+- Deixe espaços ao redor dos pipes de tabelas (ex: `| --- | --- |`).
+- Use apenas UM espaço após o marcador de lista (ex: `- item`).
+- NUNCA repita trechos de texto acidentalmente. Revise sua formatação.
+    """
+
+    resultados = []
+    pasta_resultados = "resultados_markdown"
+    os.makedirs(pasta_resultados, exist_ok=True)
+    
+    # Agrupar emails pelos prefixos no assunto
+    grupos = {}
+    for email in emails:
+        assunto = email['assunto'].lower()
+        remetente = email.get('remetente', '').lower()
+        chave_encontrada = None
+        for prefixo in MAPEAMENTO_PREFIXOS:
+            if prefixo in remetente or assunto.startswith(prefixo):
+                chave_encontrada = prefixo
+                break
+        
+        if chave_encontrada:
+            if chave_encontrada not in grupos:
+                grupos[chave_encontrada] = []
+            grupos[chave_encontrada].append(email)
         else:
-            for i, email in enumerate(emails_grupo):
-                prompt_atual = prompt_espelho_magico
-                texto = processar_conteudo_html(email['conteudo_html'], prompt_atual, chave)
-                if texto and not str(texto).startswith("ERRO:"):
-                    # Adiciona texto_resultados_grupo apenas no primeiro e-mail (para não repetir)
-                    if i == 0 and texto_resultados_grupo:
-                        texto_final = texto_resultados_grupo + "\n\n---\n\n" + texto.strip()
-                    else:
-                        texto_final = texto.strip()
-                    textos_grupo.append(texto_final)
-                    emails_sucesso.append(email)
-                time.sleep(2)
+            grupos[assunto] = [email] # Fallback: email sem prefixo mapeado
             
-        if textos_grupo:
-            texto_final_mesclado = "\n\n---\n\n".join(textos_grupo)
+    # Etapa 1: Interação sequencial com o usuário
+    configs_grupos = []
+    for chave, emails_grupo in grupos.items():
+        if chave in MAPEAMENTO_PREFIXOS:
+            titulo_base = MAPEAMENTO_PREFIXOS[chave]
+            console.print(f"\n[bold magenta]Encontrados e-mails para: {titulo_base}[/bold magenta]")
             
-            linhas = texto_final_mesclado.split("\n")
-            linhas_processadas = []
-            titulos_vistos = set()
-            for linha in linhas:
-                match_heading = re.match(r'^(#{2,})\s+(.*)$', linha)
-                if match_heading:
-                    titulo = match_heading.group(2).strip().lower()
-                    if titulo in titulos_vistos:
-                        continue
-                    titulos_vistos.add(titulo)
-                linhas_processadas.append(linha)
+            padrao_busca = os.path.join(pasta_resultados, f"{titulo_base} #*.md")
+            arquivos_existentes = glob.glob(padrao_busca)
             
-            texto_final_mesclado = "\n".join(linhas_processadas)
+            maior_numero = 0
+            for arq in arquivos_existentes:
+                nome_arq = os.path.basename(arq)
+                match = re.search(r'#(\d+)\.md$', nome_arq)
+                if match:
+                    num = int(match.group(1))
+                    if num > maior_numero:
+                        maior_numero = num
             
-            caminho_final = os.path.join(pasta_resultados, nome_final)
-            
-            with open(caminho_final, "w", encoding="utf-8") as f:
-                f.write(texto_final_mesclado + "\n")
+            if maior_numero > 0:
+                numero = str(maior_numero + 1)
+                console.print(f"[bold green]▶ Número da edição automatizado: {numero} (Última encontrada: {maior_numero})[/bold green]")
+            elif sys.stdin.isatty():
+                numero = input(f"▶ Qual o número da edição para '{titulo_base}'? ")
+            else:
+                numero = time.strftime("%Y%m%d")
+                console.print(f"[yellow]▶ Sem terminal interativo. Usando data como número: {numero}[/yellow]")
                 
-            console.print(f"[bold green]✔[/bold green] Salvo: [bold]{caminho_final}[/bold]")
-            resultados.append(f"✅ {nome_final} gerado com sucesso!")
-            
-            if drive_service:
-                upload_para_drive(drive_service, caminho_final, nome_final)
-                
-            for email in emails_sucesso:
-                marcar_email_como_lido(gmail_service, email['id'])
+            nome_final = f"{titulo_base} #{numero.strip()}.md"
         else:
-            console.print(f"[bold red]✖ Falha ao gerar texto para {nome_final}[/bold red]")
-            resultados.append(f"❌ Erro ao gerar {nome_final}")
+            titulo_base = re.sub(r'[\\/*?:"<>|]', "", chave)[:50]
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            nome_final = f"{titulo_base}_{timestamp}.md"
+            
+        unificar_inteligente = False
+        if len(emails_grupo) >= 2 and sys.stdin.isatty():
+            console.print(f"[bold yellow]Foram encontrados {len(emails_grupo)} e-mails para '{titulo_base}'.[/bold yellow]")
+            resposta = input("▶ Deseja unificar a extração de forma inteligente em um único texto (mesclando assuntos e evitando repetições)? (S/N): ").strip().lower()
+            if resposta == 's':
+                unificar_inteligente = True
+                
+        configs_grupos.append({
+            "chave": chave,
+            "emails_grupo": emails_grupo,
+            "titulo_base": titulo_base,
+            "nome_final": nome_final,
+            "unificar_inteligente": unificar_inteligente
+        })
+        
+    console.print(f"\n[bold green]Iniciando processamento paralelo de {len(configs_grupos)} grupos de e-mails...[/bold green]\n")
+        
+    # Etapa 2: Processamento Paralelo de todos os grupos
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeElapsedColumn(),
+        console=console,
+    ) as progress:
+        
+        task_id = progress.add_task("[cyan]Extraindo com IA...", total=len(configs_grupos))
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(configs_grupos), 5)) as executor:
+            futuros = {
+                executor.submit(
+                    processar_grupo_isolado,
+                    cfg["chave"],
+                    cfg["emails_grupo"],
+                    cfg["titulo_base"],
+                    cfg["nome_final"],
+                    cfg["unificar_inteligente"],
+                    pasta_resultados,
+                    prompt_espelho_magico,
+                    drive_service,
+                    gmail_service
+                ): cfg for cfg in configs_grupos
+            }
+            
+            for futuro in concurrent.futures.as_completed(futuros):
+                cfg = futuros[futuro]
+                try:
+                    resultado = futuro.result()
+                    resultados.append(resultado)
+                except Exception as e:
+                    resultados.append(f"❌ Erro crítico no grupo {cfg['titulo_base']}: {e}")
+                
+                progress.advance(task_id)
 
     tempo_total = time.time() - tempo_inicio_total
     minutos = int(tempo_total // 60)
