@@ -241,53 +241,64 @@ def extrair_com_gemini(conteudo_html, prompt, modelo_atual="gemini-3.8-flash"):
     if len(clientes_gemini) > 1:
         indice_cliente_atual = (indice_cliente_atual + 1) % len(clientes_gemini)
         
-    tentativas_maximas = len(clientes_gemini)
+    max_retries = 3
     
-    for tentativa in range(1, tentativas_maximas + 1):
-        cliente_atual = clientes_gemini[indice_cliente_atual]
-        try:
-            console.print(f"[cyan]➜ Processando com {modelo_atual} (Tentativa {tentativa}/{tentativas_maximas} | Chave {indice_cliente_atual + 1}/{len(clientes_gemini)})...[/cyan]")
-            config_kwargs = {
-                "system_instruction": prompt,
-                "temperature": 0.2,
-            }
-            if "RESULTADOS RECENTES" in prompt:
-                config_kwargs["tools"] = [{"google_search": {}}]
+    if len(clientes_gemini) > 1:
+        indice_cliente_atual = (indice_cliente_atual + 1) % len(clientes_gemini)
+        
+    for retry in range(1, max_retries + 1):
+        tentativas_maximas = len(clientes_gemini)
+        
+        for tentativa in range(1, tentativas_maximas + 1):
+            cliente_atual = clientes_gemini[indice_cliente_atual]
+            try:
+                console.print(f"[cyan]➜ Processando com {modelo_atual} (Retentativa {retry}/{max_retries} | Chave {indice_cliente_atual + 1}/{len(clientes_gemini)})...[/cyan]")
+                config_kwargs = {
+                    "system_instruction": prompt,
+                    "temperature": 0.2,
+                }
+                if "RESULTADOS RECENTES" in prompt:
+                    config_kwargs["tools"] = [{"google_search": {}}]
 
-            response = cliente_atual.models.generate_content(
-                model=modelo_atual,
-                contents=[conteudo_html],
-                config=types.GenerateContentConfig(**config_kwargs)
-            )
-            return response.text, None, cliente_atual
-            
-        except APIError as e:
-            erro_str = str(e)
-            if "404" in erro_str or "NOT_FOUND" in erro_str:
-                raise Exception(f"Modelo {modelo_atual} não encontrado ou descontinuado (Erro 404).")
+                response = cliente_atual.models.generate_content(
+                    model=modelo_atual,
+                    contents=[conteudo_html],
+                    config=types.GenerateContentConfig(**config_kwargs)
+                )
+                return response.text, None, cliente_atual
                 
-            if "429" in erro_str or "RESOURCE_EXHAUSTED" in erro_str or "503" in erro_str or "UNAVAILABLE" in erro_str:
-                is_quota = "429" in erro_str or "RESOURCE_EXHAUSTED" in erro_str
-                ultimo_erro = "Cota Esgotada (Rate Limit / 429)" if is_quota else "Serviço Indisponível (503)"
-                
-                if not is_quota:
-                    # Se for erro 503, o problema é no servidor do modelo, não na chave. 
-                    # Espera um pouco antes de escalar para o próximo modelo.
-                    time.sleep(5)
-                    raise Exception(f"{ultimo_erro}. Puxando próximo modelo da fila...")
-
-                if tentativa < tentativas_maximas:
-                    console.print(f"[yellow]  ⚠ {ultimo_erro} na Chave {indice_cliente_atual + 1} no {modelo_atual}. Alternando para a próxima chave...[/yellow]")
-                    indice_cliente_atual = (indice_cliente_atual + 1) % len(clientes_gemini)
-                    continue
+            except APIError as e:
+                erro_str = str(e)
+                if "404" in erro_str or "NOT_FOUND" in erro_str:
+                    raise Exception(f"Modelo {modelo_atual} não encontrado ou descontinuado (Erro 404).")
+                    
+                if "429" in erro_str or "RESOURCE_EXHAUSTED" in erro_str or "503" in erro_str or "UNAVAILABLE" in erro_str:
+                    is_quota = "429" in erro_str or "RESOURCE_EXHAUSTED" in erro_str
+                    ultimo_erro = "Cota Esgotada (Rate Limit / 429)" if is_quota else "Serviço Indisponível (503)"
+                    
+                    if not is_quota:
+                        # Se for erro 503, o problema é no servidor do modelo, não na chave. 
+                        console.print(f"[yellow]  ⚠ 503 Service Unavailable no {modelo_atual}. Problema no servidor.[/yellow]")
+                        break # Sai do loop de chaves, vai para o sleep do loop de retries
+                        
+                    if tentativa < tentativas_maximas:
+                        console.print(f"[yellow]  ⚠ {ultimo_erro} na Chave {indice_cliente_atual + 1} no {modelo_atual}. Alternando para a próxima chave...[/yellow]")
+                        indice_cliente_atual = (indice_cliente_atual + 1) % len(clientes_gemini)
+                        continue
+                    else:
+                        console.print(f"[yellow]  ⚠ Todas as chaves esgotaram limite para {modelo_atual} na retentativa {retry}.[/yellow]")
+                        break # Sai do loop de chaves, vai para o sleep do loop de retries
                 else:
-                    raise Exception(f"Falha ao usar {modelo_atual} após testar todas as {tentativas_maximas} chave(s). Motivo final: {ultimo_erro}")
-            else:
-                raise Exception(f"Erro na API ({modelo_atual}): {erro_str}")
-        except Exception as e:
-             raise Exception(f"Erro inesperado ({modelo_atual}): {str(e)}")
-                
-    raise Exception(f"Todas as tentativas falharam para o {modelo_atual}. Motivo final: {ultimo_erro}")
+                    raise Exception(f"Erro na API ({modelo_atual}): {erro_str}")
+            except Exception as e:
+                 raise Exception(f"Erro inesperado ({modelo_atual}): {str(e)}")
+                 
+        if retry < max_retries:
+            espera = 15 * retry
+            console.print(f"[yellow]  ⏳ Aguardando {espera}s antes de tentar o {modelo_atual} novamente...[/yellow]")
+            time.sleep(espera)
+            
+    raise Exception(f"Todas as {max_retries} tentativas falharam para o {modelo_atual} após backoff. Motivo final: {ultimo_erro}")
 
 def processar_conteudo_html(conteudo_html, prompt, chave_newsletter):
     texto_limpo = ""
