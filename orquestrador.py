@@ -516,6 +516,7 @@ MAPEAMENTO_PREFIXOS = {
     "tns health": "Diagnóstico Sincero",
     "tns sports": "Gol Contra",
     "tns business": "Ata de Reunião",
+    "tns better work": "Ata de Reunião",
     "aidrops": "Alucinação Sintética",
     "notícias de segurança": "Hackeando o Problema",
     "notícias de entretenimento": "Pipoca Vencida",
