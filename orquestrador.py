@@ -245,20 +245,20 @@ def extrair_com_gemini(conteudo_html, prompt, modelo_atual="gemini-3.8-flash"):
     ultimo_erro = "Erro desconhecido"
     
     if len(clientes_gemini) > 1:
-        indice_cliente_atual = (indice_cliente_atual + 1) % len(clientes_gemini)
+        with print_lock:
+            indice_cliente_atual = (indice_cliente_atual + 1) % len(clientes_gemini)
         
-    max_retries = 3
+    max_retries = 5
     
-    if len(clientes_gemini) > 1:
-        indice_cliente_atual = (indice_cliente_atual + 1) % len(clientes_gemini)
-        
     for retry in range(1, max_retries + 1):
         tentativas_maximas = len(clientes_gemini)
         
         for tentativa in range(1, tentativas_maximas + 1):
             cliente_atual = clientes_gemini[indice_cliente_atual]
             try:
-                console.print(f"[cyan]➜ Processando com {modelo_atual} (Retentativa {retry}/{max_retries} | Chave {indice_cliente_atual + 1}/{len(clientes_gemini)})...[/cyan]")
+                with print_lock:
+                    console.print(f"[cyan]➜ Processando com {modelo_atual} (Retentativa {retry}/{max_retries} | Chave {indice_cliente_atual + 1}/{len(clientes_gemini)})...[/cyan]")
+                
                 config_kwargs = {
                     "system_instruction": prompt,
                     "temperature": 0.2,
@@ -284,15 +284,18 @@ def extrair_com_gemini(conteudo_html, prompt, modelo_atual="gemini-3.8-flash"):
                     
                     if not is_quota:
                         # Se for erro 503, o problema é no servidor do modelo, não na chave. 
-                        console.print(f"[yellow]  ⚠ 503 Service Unavailable no {modelo_atual}. Problema no servidor.[/yellow]")
+                        with print_lock:
+                            console.print(f"[yellow]  ⚠ 503 Service Unavailable no {modelo_atual}. Problema no servidor.[/yellow]")
                         break # Sai do loop de chaves, vai para o sleep do loop de retries
                         
                     if tentativa < tentativas_maximas:
-                        console.print(f"[yellow]  ⚠ {ultimo_erro} na Chave {indice_cliente_atual + 1} no {modelo_atual}. Alternando para a próxima chave...[/yellow]")
+                        with print_lock:
+                            console.print(f"[yellow]  ⚠ {ultimo_erro} na Chave {indice_cliente_atual + 1} no {modelo_atual}. Alternando para a próxima chave...[/yellow]")
                         indice_cliente_atual = (indice_cliente_atual + 1) % len(clientes_gemini)
                         continue
                     else:
-                        console.print(f"[yellow]  ⚠ Todas as chaves esgotaram limite para {modelo_atual} na retentativa {retry}.[/yellow]")
+                        with print_lock:
+                            console.print(f"[yellow]  ⚠ Todas as chaves esgotaram limite para {modelo_atual} na retentativa {retry}.[/yellow]")
                         break # Sai do loop de chaves, vai para o sleep do loop de retries
                 else:
                     raise Exception(f"Erro na API ({modelo_atual}): {erro_str}")
@@ -300,8 +303,11 @@ def extrair_com_gemini(conteudo_html, prompt, modelo_atual="gemini-3.8-flash"):
                  raise Exception(f"Erro inesperado ({modelo_atual}): {str(e)}")
                  
         if retry < max_retries:
-            espera = 15 * retry
-            console.print(f"[yellow]  ⏳ Aguardando {espera}s antes de tentar o {modelo_atual} novamente...[/yellow]")
+            import random
+            espera_base = 15 * (2 ** (retry - 1)) # Exponential backoff: 15, 30, 60, 120...
+            espera = espera_base + random.uniform(1.0, 5.0) # Jitter
+            with print_lock:
+                console.print(f"[yellow]  ⏳ Aguardando {espera:.1f}s antes de tentar o {modelo_atual} novamente...[/yellow]")
             time.sleep(espera)
             
     raise Exception(f"Todas as {max_retries} tentativas falharam para o {modelo_atual} após backoff. Motivo final: {ultimo_erro}")
