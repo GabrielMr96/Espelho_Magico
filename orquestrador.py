@@ -333,10 +333,7 @@ def processar_conteudo_html(conteudo_html, prompt, chave_newsletter):
     
     ia_padrao = os.environ.get("IA_PADRAO", "gemini").lower()
     
-    # Roteamento cravado pro Gol Contra
-    if chave_newsletter == "tns sports":
-        ia_padrao = "perplexity"
-        
+    # Roteamento cravado pro Gol Contra (Removido, usará Gemini por padrão)        
     if ia_padrao == "perplexity":
         try:
             texto_limpo, _ = extrair_com_perplexity(conteudo_html, prompt)
@@ -525,63 +522,29 @@ MAPEAMENTO_PREFIXOS = {
 }
 
 def buscar_resultados_futebol(data_ontem_str, dia_semana_ontem):
-    console.print(f"[cyan]➜ Buscando placares do dia {data_ontem_str} na web (ESPN)...[/cyan]")
+    console.print(f"[cyan]➜ Buscando placares do dia {data_ontem_str} usando Gemini (Google Search)...[/cyan]")
     
-    # data_ontem_str format is expected to be "DD/MM/YYYY"
+    prompt = f"""
+INSTRUÇÕES OBRIGATÓRIAS:
+Você deve pesquisar na web os resultados dos principais jogos de futebol que ocorreram no dia {data_ontem_str} ({dia_semana_ontem}).
+Retorne a resposta EXCLUSIVAMENTE no seguinte formato Markdown:
+
+## RESULTADOS RECENTES ({data_ontem_str})
+
+### [Nome do Campeonato]
+[Time Mandante] [Placar] x [Placar] [Time Visitante]
+
+Foque apenas nos principais campeonatos (Brasileirão, Copa do Brasil, Libertadores, Sul-Americana, Champions League, principais ligas europeias). Ignore amistosos irrelevantes.
+NÃO adicione texto extra, saudações ou conversas, apenas a lista de resultados formatada em Markdown.
+    """
+    
+    # A presença de "RESULTADOS RECENTES" no prompt ativará o Google Search no extrair_com_gemini
     try:
-        data_espn = data_ontem_str.split("/")
-        data_espn.reverse()
-        data_espn_str = "".join(data_espn) # YYYYMMDD
-        
-        url = f"https://www.espn.com.br/futebol/resultados/_/data/{data_espn_str}"
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        r = requests.get(url, headers=headers, timeout=15)
-        
-        match = re.search(r'window\[\'__espnfitt__\'\]=(.*?);</script>', r.text)
-        if not match:
-            return "⚠️ Não foi possível encontrar os dados esportivos no site."
-            
-        data = json.loads(match.group(1))
-        leagues = data.get('page', {}).get('content', {}).get('scoreboard', {}).get('gmsByLeague', [])
-        
-        if not leagues:
-            return f"## RESULTADOS RECENTES ({data_ontem_str})\n\nNenhum jogo importante encontrado nesta data."
-            
-        resultados_md = [f"## RESULTADOS RECENTES ({data_ontem_str})"]
-        
-        for league in leagues:
-            league_name = league.get('league', {}).get('name', 'Campeonato')
-            
-            # Filtro opcional para remover amistosos ou campeonatos muito irrelevantes, se quiser. 
-            # Mas a ESPN já filtra os principais primeiro.
-            if "Amistoso" in league_name:
-                continue # Pula amistosos para focar nos principais
-                
-            resultados_md.append(f"\n### {league_name}")
-            
-            for evt in league.get('evts', []):
-                competitors = evt.get('competitors', [])
-                if len(competitors) == 2:
-                    # competitors list can have home/away in any order, they have 'isHome' boolean
-                    team1 = competitors[0]
-                    team2 = competitors[1]
-                    
-                    if team1.get('isHome'):
-                        home, away = team1, team2
-                    else:
-                        home, away = team2, team1
-                    
-                    team_home = home.get('displayName', 'Time Mandante')
-                    score_home = home.get('score', '')
-                    
-                    team_away = away.get('displayName', 'Time Visitante')
-                    score_away = away.get('score', '')
-                    
-                    resultados_md.append(f"{team_home} {score_home} x {score_away} {team_away}")
-                    
-        return "\n".join(resultados_md)
+        conteudo_base = f"Encontre os resultados dos jogos de futebol do dia {data_ontem_str}."
+        texto_resultados, _, _ = extrair_com_gemini(conteudo_base, prompt)
+        return texto_resultados
     except Exception as e:
-        return f"⚠️ Erro ao buscar resultados na web: {e}"
+        return f"⚠️ Erro ao buscar resultados com Gemini: {e}"
 
 
 def processar_lote_emails():
