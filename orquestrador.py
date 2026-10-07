@@ -240,7 +240,7 @@ def extrair_com_perplexity(conteudo_html, prompt):
         erro_detalhado = response.text if response is not None and hasattr(response, "text") else ""
         raise Exception(f"Erro na API do Perplexity: {e} - {erro_detalhado}")
 
-def extrair_com_gemini(conteudo_html, prompt, modelo_atual="gemini-3.8-flash"):
+def extrair_com_gemini(conteudo_html, prompt, modelo_atual="gemini-3.5-flash"):
     global indice_cliente_atual
     ultimo_erro = "Erro desconhecido"
     
@@ -284,9 +284,10 @@ def extrair_com_gemini(conteudo_html, prompt, modelo_atual="gemini-3.8-flash"):
                     
                     if not is_quota:
                         # Se for erro 503, o problema é no servidor do modelo, não na chave. 
+                        # Falha rápido para tentar o próximo modelo em vez de travar o script por minutos.
                         with print_lock:
-                            console.print(f"[yellow]  ⚠ 503 Service Unavailable no {modelo_atual}. Problema no servidor.[/yellow]")
-                        break # Sai do loop de chaves, vai para o sleep do loop de retries
+                            console.print(f"[yellow]  ⚠ 503 Service Unavailable no {modelo_atual}. Trocando de modelo imediatamente...[/yellow]")
+                        raise Exception(f"Serviço Indisponível (503) no modelo {modelo_atual}.")
                         
                     if tentativa < tentativas_maximas:
                         with print_lock:
@@ -316,24 +317,15 @@ def processar_conteudo_html(conteudo_html, prompt, chave_newsletter):
     texto_limpo = ""
     
     modelos_para_testar = []
-    modelo_env = os.environ.get("GEMINI_MODEL")
-    modelo_fallback = os.environ.get("GEMINI_MODEL_FALLBACK")
     
-    if modelo_env:
-        modelos_para_testar.append(modelo_env)
-    if modelo_fallback:
-        modelos_para_testar.append(modelo_fallback)
-        
+    # Lista regressiva fixa
     modelos_para_testar.extend([
         "gemini-3.8-flash",
         "gemini-3.7-flash",
         "gemini-3.6-flash",
         "gemini-3.5-flash",
-        "gemini-3.1-flash-lite",
         "gemini-2.5-flash",
-        "gemini-2.5-pro",
-        "gemini-flash-latest",
-        "gemini-pro-latest"
+        "gemini-flash-latest"
     ])
     modelos_para_testar = list(dict.fromkeys(modelos_para_testar))
     
@@ -347,15 +339,26 @@ def processar_conteudo_html(conteudo_html, prompt, chave_newsletter):
         except Exception as e:
             with print_lock: console.print(f"[yellow]⚠ Erro no Perplexity: {e}. Tentando Gemini como fallback...[/yellow]")
 
-    for modelo in modelos_para_testar:
-        try:
-            texto_limpo, _, _ = extrair_com_gemini(conteudo_html, prompt, modelo_atual=modelo)
-            return texto_limpo
-        except Exception as e:
-            with print_lock: console.print(f"[yellow]  ⚠ Erro com modelo {modelo}: {e}. Tentando próxima versão...[/yellow]")
-            continue
+    max_tentativas_globais = 10
+    base_delay = 15 # Segundos base
+    import random
+    
+    for tentativa in range(max_tentativas_globais):
+        for modelo in modelos_para_testar:
+            try:
+                texto_limpo, _, _ = extrair_com_gemini(conteudo_html, prompt, modelo_atual=modelo)
+                return texto_limpo
+            except Exception as e:
+                with print_lock: console.print(f"[yellow]  ⚠ Erro com modelo {modelo}: {e}. Tentando próxima versão...[/yellow]")
+                continue
+                
+        if tentativa < max_tentativas_globais - 1:
+            # Matemática do backoff exponencial com Jitter
+            sleep_time = (base_delay * (2 ** tentativa)) + random.uniform(0, 5)
+            with print_lock: console.print(f"[bold yellow]⏳ Todos os modelos falharam (503). Recuo exponencial ativo: Aguardando {sleep_time:.1f} segundos (Jitter incluído) antes da tentativa {tentativa + 2}/{max_tentativas_globais}...[/bold yellow]")
+            time.sleep(sleep_time)
             
-    msg_erro = "⚠ Falha total em todos os modelos testados."
+    msg_erro = "⚠ Falha total em todos os modelos testados após várias tentativas."
     logging.warning(msg_erro)
     with print_lock: console.print(f"[bold red]{msg_erro}[/bold red]")
     return "ERRO: Falha na extração."
@@ -789,9 +792,13 @@ Sua missão adicional é:
         for email in emails_sucesso:
             marcar_email_como_lido(gmail_service, email['id'])
             
+        with print_lock: console.print(f"[dim]⏳ Aguardando 15 segundos para não sobrecarregar a API do Google...[/dim]")
+        time.sleep(15)
         return f"✅ {nome_final} gerado com sucesso!"
     else:
         with print_lock: console.print(f"[bold red]✖ Falha ao gerar texto para {nome_final}[/bold red]")
+        with print_lock: console.print(f"[dim]⏳ Aguardando 15 segundos para não sobrecarregar a API do Google...[/dim]")
+        time.sleep(15)
         return f"❌ Erro ao gerar {nome_final}"
 
 def processar_lote_emails():
@@ -936,7 +943,7 @@ REGRAS DE FORMATAÇÃO MARKDOWN:
         
         task_id = progress.add_task("[cyan]Extraindo com IA...", total=len(configs_grupos))
         
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(configs_grupos), 5)) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
             futuros = {
                 executor.submit(
                     processar_grupo_isolado,
@@ -973,4 +980,5 @@ REGRAS DE FORMATAÇÃO MARKDOWN:
     logging.info(f"Processamento concluído em {minutos}min {segundos}s. {len(resultados)} grupo(s) processado(s).")
 
 if __name__ == "__main__":
+
     processar_lote_emails()
