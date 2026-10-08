@@ -550,10 +550,27 @@ NÃO adicione texto extra, saudações ou conversas, apenas a lista de resultado
     # A presença de "RESULTADOS RECENTES" no prompt ativará o Google Search no extrair_com_gemini
     try:
         conteudo_base = f"Encontre os resultados dos jogos de futebol do dia {data_ontem_str}."
-        texto_resultados, _, _ = extrair_com_gemini(conteudo_base, prompt)
-        return texto_resultados
+        modelos_futebol = [
+            "gemini-3.8-flash",
+            "gemini-3.7-flash",
+            "gemini-3.6-flash",
+            "gemini-3.5-flash",
+            "gemini-2.5-flash",
+            "gemini-flash-latest"
+        ]
+        
+        ultimo_erro = None
+        for modelo in modelos_futebol:
+            try:
+                texto_resultados, _, _ = extrair_com_gemini(conteudo_base, prompt, modelo_atual=modelo)
+                return texto_resultados
+            except Exception as e:
+                ultimo_erro = str(e)
+                continue
+                
+        return f"⚠️ Erro ao buscar resultados com Gemini em todos os modelos: {ultimo_erro}"
     except Exception as e:
-        return f"⚠️ Erro ao buscar resultados com Gemini: {e}"
+        return f"⚠️ Erro crítico inesperado: {e}"
 
 
 def processar_lote_emails():
@@ -720,12 +737,11 @@ def processar_grupo_isolado(chave, emails_grupo, titulo_base, nome_final, unific
                 resultados_lista.append(resultado_dia)
                 
         texto_resultados_grupo = "\n\n".join(resultados_lista)
-        
         try:
-            with open(arquivo_controle, 'w', encoding='utf-8') as f:
-                json.dump({"ultima_data_extraida": ontem.strftime("%Y-%m-%d")}, f)
+            with open(arquivo_controle, 'r', encoding='utf-8') as f:
+                pass # Apenas garantindo que não vamos escrever agora
         except Exception as e:
-            with print_lock: console.print(f"[yellow]⚠ Erro ao salvar {arquivo_controle}: {e}[/yellow]")
+            pass
 
     if unificar_inteligente:
         prompt_atual = prompt_espelho_magico + """
@@ -783,6 +799,15 @@ Sua missão adicional é:
         
         with open(caminho_final, "w", encoding="utf-8") as f:
             f.write(texto_final_mesclado + "\n")
+            
+        if chave == "tns sports":
+            try:
+                hoje = datetime.datetime.now()
+                ontem = hoje - datetime.timedelta(days=1)
+                with open("controle_gol.json", 'w', encoding='utf-8') as f:
+                    json.dump({"ultima_data_extraida": ontem.strftime("%Y-%m-%d")}, f)
+            except Exception as e:
+                with print_lock: console.print(f"[yellow]⚠ Erro ao salvar controle_gol.json: {e}[/yellow]")
             
         with print_lock: console.print(f"[bold green]✔[/bold green] Salvo: [bold]{caminho_final}[/bold]")
         
