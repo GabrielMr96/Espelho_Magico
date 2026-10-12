@@ -1,0 +1,53 @@
+{
+  "mapeamento_prefixos": {
+    "the news": "Boletim Fora de Ordem",
+    "tns money": "Fechamento de Caixa",
+    "tns health": "Diagnóstico Sincero",
+    "tns sports": "Gol Contra",
+    "tns business": "Ata de Reunião",
+    "tns better work": "Ata de Reunião",
+    "aidrops": "Alucinação Sintética",
+    "notícias de segurança": "Hackeando o Problema",
+    "notícias de entretenimento": "Pipoca Vencida",
+    "notícias de games": "Controle Quebrado",
+    "peak": "The Out of Order Dispatch"
+  },
+
+  "prefixo_futebol": "tns sports",
+
+  "gemini_models": [
+    "gemini-3.8-flash",
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-2.5-flash",
+    "gemini-flash-latest"
+  ],
+
+  "futebol": {
+    "ligas_permitidas": [
+      "brasileiro serie a", "copa do brasil", "copa libertadores", "copa sudamericana",
+      "english premier league", "spanish laliga", "laliga", "german bundesliga",
+      "italian serie a", "french ligue 1", "uefa champions league", "uefa europa league",
+      "copa america", "uefa european championship", "fifa world cup", "fifa club world cup",
+      "conmebol copa america", "world cup qualifying", "eliminatórias"
+    ],
+    "termos_ligas_ignoradas": [
+      "womens", "ncaa", "2 bundesliga", "ligue 2", "championship"
+    ],
+    "ligas_excluidas": [
+      "russian", "chinese", "scottish", "bolivian", "chile", "allsvenskan", "eliteserien",
+      "turkish", "colombian", "mexican", "peruvian", "paraguayan", "uruguayan", "venezuelan",
+      "ecuadorian", "austrian", "greek", "danish", "swiss", "clausura", "apertura"
+    ],
+    "clubes_destaque": [
+      "flamengo", "palmeiras", "corinthians", "são paulo", "sao paulo", "santos", "grêmio",
+      "gremio", "internacional", "atlético-mg", "atletico-mg", "cruzeiro", "botafogo",
+      "fluminense", "vasco", "bahia", "fortaleza", "athletico-pr", "coritiba",
+      "real madrid", "barcelona", "manchester city", "manchester united", "liverpool",
+      "arsenal", "chelsea", "bayern munich", "bayern", "borussia dortmund", "dortmund",
+      "paris saint-germain", "psg", "juventus", "inter milan", "milan", "ac milan",
+      "benfica", "porto", "sporting cp", "al nassr", "al hilal", "inter miami"
+    ]
+  }
+}

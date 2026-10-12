@@ -4,13 +4,15 @@
 env/
 __pycache__/
 *.pyc
+.pytest_cache/
 
 # Tokens do Google
 credentials.json
 token.json
 
-# Logs
+# Logs (inclui os backups rotacionados: .log.1, .log.2...)
 *.log
+*.log.*
 
 # Output e Cache do Script (Arquivos que não devem subir)
 resultados_markdown/
