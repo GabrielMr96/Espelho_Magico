@@ -3,6 +3,10 @@ import base64
 import re
 import threading
 
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -13,6 +17,40 @@ from .log import escape, logger
 
 # Os clientes do googleapiclient (httplib2) não são thread-safe; serializamos as chamadas.
 google_lock = threading.Lock()
+
+# Timeout (conexão, leitura) e política de retry para os endpoints OAuth do Google.
+# Redes corporativas/VPN às vezes derrubam a primeira conexão; sem retry, a troca do
+# código de autorização falhava mesmo depois de o usuário já ter autorizado no navegador.
+_OAUTH_TIMEOUT = (15, 60)
+
+
+def _retry_policy():
+    return Retry(
+        total=5,
+        connect=5,
+        read=3,
+        backoff_factor=2,  # 0s, 2s, 4s, 8s, 16s
+        status_forcelist=(500, 502, 503, 504),
+        allowed_methods=None,  # inclui POST (endpoint /token)
+        raise_on_status=False,
+    )
+
+
+def _montar_retry(session):
+    adapter = HTTPAdapter(max_retries=_retry_policy())
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+
+    # Aplica um timeout padrão (o fetch_token do oauthlib não define nenhum -> espera do SO).
+    request_original = session.request
+
+    def request_com_timeout(method, url, **kwargs):
+        if kwargs.get("timeout") is None:
+            kwargs["timeout"] = _OAUTH_TIMEOUT
+        return request_original(method, url, **kwargs)
+
+    session.request = request_com_timeout
+    return session
 
 
 def autenticar_google():
@@ -28,7 +66,7 @@ def autenticar_google():
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             try:
-                creds.refresh(Request())
+                creds.refresh(Request(session=_montar_retry(requests.Session())))
             except Exception as e:
                 logger.warning(f"Erro ao renovar token: {escape(str(e))}. Forçando novo login.")
                 creds = None
@@ -40,7 +78,8 @@ def autenticar_google():
                     f"O arquivo credentials.json é obrigatório (procurado em {config.CREDENTIALS_PATH})."
                 )
             flow = InstalledAppFlow.from_client_secrets_file(str(config.CREDENTIALS_PATH), config.GOOGLE_SCOPES)
-            creds = flow.run_local_server(port=0)
+            _montar_retry(flow.oauth2session)
+            creds = flow.run_local_server(port=0, timeout_seconds=300)
 
         config.TOKEN_PATH.write_text(creds.to_json(), encoding="utf-8")
 
