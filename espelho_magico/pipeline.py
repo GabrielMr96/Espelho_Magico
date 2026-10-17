@@ -90,6 +90,17 @@ def _separar_rabo(linhas):
     return linhas[:fim], linhas[fim:]
 
 
+_RE_CREDITO_RESIDUAL = re.compile(
+    r"^\[(?:descrição da imagem|imagem):\s*[^\n|/–—]{1,40}\s*(?:[|/–—]|\bvia\b)\s*"
+    r"(?:reprodu[cç][aã]o|getty(?:\s*images)?|globo|uol|afp|reuters|estad[aã]o|folha|x|twitter|"
+    r"unsplash|divulga[cç][aã]o|fortune|bloomberg|ap|shutterstock|vatican|axios|metr[oó]poles|ge)\s*\]\s*$",
+    re.I,
+)
+_RE_APROFUNDE = re.compile(r"\s*\(?(?:aprofund[ea]|leia mais|saiba mais)\)?", re.I)
+_RE_TWITTER_LIXO = re.compile(r"(?:https?://t\.co/\S+|pic\.twitter\.com/\S+)")
+_RE_TITULO_PONTUADO = re.compile(r"^(#{1,6}\s+.*?)[.?!:]\s*$")
+
+
 def deduplicar_secoes(texto):
     """Remove seções com título repetido sem perder conteúdo.
 
@@ -131,6 +142,50 @@ def deduplicar_secoes(texto):
 
     linhas = [linha for b in saida for linha in b["linhas"]]
     return re.sub(r"\n{3,}", "\n\n", "\n".join(linhas)).strip()
+
+
+def sanitizar_markdown_final(texto):
+    """Higieniza o Markdown final antes de salvar e subir para o Drive:
+    - Garante no máximo 1 título de nível 1 (#) no documento (rebaixa H1 extras para H2).
+    - Remove pontuações indesejadas no final de cabeçalhos (regras para o NotebookLM).
+    - Remove descrições de imagem que sejam apenas créditos de agência/fotógrafo.
+    - Remove CTAs residuais como (Aprofunde) e links quebrados de redes sociais.
+    - Executa a deduplicação de seções repetidas.
+    """
+    texto = _RE_APROFUNDE.sub("", texto)
+    texto = _RE_TWITTER_LIXO.sub("", texto)
+
+    linhas = texto.splitlines()
+    linhas_processadas = []
+    viu_h1 = False
+
+    for linha in linhas:
+        l_strip = linha.strip()
+
+        # Remove imagens que sejam apenas créditos de fotógrafo/agência residuais
+        if _RE_CREDITO_RESIDUAL.match(l_strip):
+            continue
+
+        # Cabeçalho H1 (#)
+        if re.match(r"^#\s+", linha):
+            if not viu_h1:
+                viu_h1 = True
+                linhas_processadas.append(linha)
+            else:
+                # Rebaixa H1 subsequente para H2
+                linhas_processadas.append("#" + linha)
+            continue
+
+        # Remove pontuação no fim de títulos (## Titulo? -> ## Titulo)
+        m_tit = _RE_TITULO_PONTUADO.match(linha)
+        if m_tit and linha.startswith("#"):
+            linha = m_tit.group(1)
+
+        linhas_processadas.append(linha)
+
+    limpo = "\n".join(linhas_processadas)
+    limpo = deduplicar_secoes(limpo)
+    return re.sub(r"\n{3,}", "\n\n", limpo).strip()
 
 
 # --- Pipeline -------------------------------------------------------------------
@@ -264,7 +319,7 @@ class Pipeline:
 
         if resultados_futebol:
             textos[0] = resultados_futebol + SEPARADOR + textos[0]
-        final = deduplicar_secoes(SEPARADOR.join(textos))
+        final = sanitizar_markdown_final(SEPARADOR.join(textos))
 
         self.pasta_saida.mkdir(parents=True, exist_ok=True)
         caminho = self.pasta_saida / cfg.nome_final

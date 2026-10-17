@@ -11,12 +11,31 @@ from markdownify import markdownify
 
 _TAGS_REMOVIDAS = ["script", "style", "head", "meta", "link", "noscript", "title", "svg", "iframe", "form"]
 
-_ALT_DECORATIVO = re.compile(r"^(logo|logotipo|image|imagem|img|icon|ícone|icone|spacer|banner|pixel|\s*)$", re.I)
+_ALT_DECORATIVO = re.compile(
+    r"^(logo|logotipo|image|imagem|img|icon|ícone|icone|spacer|banner|pixel|"
+    r"divider|separador|avatar|foto|photo|picture|header|footer|\s*)$",
+    re.I,
+)
+
+# Termos comuns em créditos puros de fotógrafo / agência (ruído puro para áudio no NotebookLM)
+_CREDITO_PADRAO = re.compile(
+    r"^(?:foto|cr[eé]dito|imagem|fonte|por|by)\s*[:\-–—]\s*.+$|"
+    r"^[^\n|/–—]{1,40}\s*(?:[|/–—]|\bvia\b)\s*(?:reprodu[cç][aã]o|getty(?:\s*images)?|globo|uol|afp|reuters|"
+    r"estad[aã]o|folha|x|twitter|unsplash|divulga[cç][aã]o|fortune|bloomberg|ap|shutterstock|"
+    r"vatican|axios|metr[oó]poles|ge|estadao|cnn|bbc|cnbc|divulga|instagram|facebook)\s*$",
+    re.I,
+)
 
 # Linhas descartadas após a conversão (CTAs, rodapés e cabeçalhos de e-mail).
 _PADROES_LINHA = [
-    r"(?i)^\W*leia mais.*$",
-    r"(?i)^\W*clique aqui.*$",
+    r"(?i)^\W*\(?leia mais(?:\s+aqui)?\)?\W*$",
+    r"(?i)^\W*\(?clique aqui(?:\s+para\s+.*)?\)?\W*$",
+    r"(?i)^\W*\(?aprofund[ea]\)?\W*$",
+    r"(?i)^\W*no que estamos clicando\W*$",
+    r"(?i)^\W*(?:compartilhe|compartilhar|compartilhe no whatsapp)\b.*$",
+    r"(?i)^\W*clique para compartilhar\b.*$",
+    r"(?i)^\W*ouça este episódio\b.*$",
+    r"(?i)^\W*responda à nossa pesquisa\b.*$",
     r"(?i)^Responder a:.*$",
     r"(?i)^Para:.*$",
     r"<[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}>",
@@ -30,6 +49,23 @@ _PADROES_LINHA = [
     r"(?i)^Reservar minha vaga.*$",
 ]
 _PADROES_COMPILADOS = [re.compile(p, re.MULTILINE) for p in _PADROES_LINHA]
+
+
+def _eh_alt_informativo(alt):
+    alt = alt.strip()
+    if not alt or len(alt) < 4:
+        return False
+    if _ALT_DECORATIVO.match(alt):
+        return False
+    if re.search(r"\.(?:png|jpe?g|gif|webp|svg)$", alt, re.I):
+        return False
+    if alt.startswith("http://") or alt.startswith("https://"):
+        return False
+    if _CREDITO_PADRAO.match(alt):
+        return False
+    if alt.lower() in ("getty images", "reprodução", "divulgação", "afp", "reuters", "the news", "tns", "axios"):
+        return False
+    return True
 
 
 def _eh_pixel(img):
@@ -77,7 +113,7 @@ def html_para_markdown(html):
         if img.decomposed:
             continue
         alt = (img.get("alt") or "").strip()
-        if _eh_pixel(img) or not alt or _ALT_DECORATIVO.match(alt):
+        if _eh_pixel(img) or not _eh_alt_informativo(alt):
             img.decompose()
         else:
             img.replace_with(f" [Imagem: {alt}] ")

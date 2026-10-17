@@ -37,3 +37,22 @@ def test_preparar_conteudo_fallback_para_html_curto():
 
 def test_limpar_linhas_normaliza_espacos():
     assert limpar_linhas("a   b\n\n\n\nc  \nClique aqui para ver") == "a b\n\nc"
+
+
+def test_remove_creditos_fotograficos():
+    html = """
+    <div>
+        <p>Notícia</p>
+        <img src="1.jpg" alt="Fortune | Getty Images">
+        <img src="2.jpg" alt="Manoella Mello | Globo">
+        <img src="3.jpg" alt="Reprodução / X">
+        <img src="4.jpg" alt="Foto: João Silva">
+        <img src="5.jpg" alt="Gráfico detalhado mostrando a inflação de 2026">
+    </div>
+    """
+    md = html_para_markdown(html)
+    assert "[Imagem: Gráfico detalhado mostrando a inflação de 2026]" in md
+    assert "Fortune" not in md
+    assert "Manoella Mello" not in md
+    assert "Getty Images" not in md
+    assert "João Silva" not in md

@@ -14,27 +14,29 @@ REGRAS DE FILTRAGEM (O QUE IGNORAR COMPLETAMENTE):
 - EXCLUA a seção/notícia INTEIRA APENAS SE for uma manchete muito curta ("isca de clique") que depende de um link para fazer sentido ("LEIA MAIS AQUI", "No que estamos clicando"). Se a notícia for completa e detalhada, mas apenas tiver um link "(Aprofunde)" ou "Leia mais" no final, MANTENHA a notícia toda e APAGUE APENAS o texto do link.
 - EXCLUA qualquer texto/imagem que seja publicidade, patrocínio, venda de produtos, propagandas ("oferecimento", "Apresentado por").
 - EXCLUA cabeçalhos, rodapés, números de página, textos legais, e links de redes sociais.
-- EXCLUA saudações diárias (ex: "Bom dia", "Boa noite"), introduções pessoais/filosóficas dos editores, e a seção "OPINIÃO DO LEITOR" (ou qualquer enquete sobre a própria newsletter).
+- EXCLUA saudações diárias (ex: "Bom dia", "Boa noite"), introduções pessoais/filosóficas dos editores, e qualquer enquete/pesquisa DE FEEDBACK sobre a própria newsletter (ex: "O que achou da edição de hoje?", "Avalie de 0 a 10", "Responda à nossa pesquisa").
 - EXCLUA cabeçalhos de e-mail completos (remetente, destinatário, data, assunto, "Leia Online", "Responder a:").
 - EXCLUA seções de entretenimento vazio sem substância noticiosa: "AROUND THE WEB", "DESCONTRAIR", "DÊNIUS GAMES", "RECADO DO TIME" e equivalentes.
 - EXCLUA "PROGRAMA DE INDICAÇÃO", links de indicação pessoal ("Seu link pessoal:"), e qualquer seção "QUEM SOMOS" ou descrição da própria newsletter.
 - EXCLUA boas-vindas a novos assinantes (ex: "Boas-vindas às X novas pessoas...") e CTAs de venda de assinatura (ex: "Assine a PRO para continuar lendo").
 - EXCLUA "NA EDIÇÃO DE HOJE" (lista de manchetes resumidas no início) — o conteúdo completo já virá nas seções seguintes.
-- MANTENHA as seções de "QUICK TAKES", "AGENDA DO DIA", "ENQUETE DO DIA" e os "RESULTADOS" de enquetes (desde que sejam sobre esportes ou notícias factuais). Copie-as exatamente como estão.
+- MANTENHA OBRIGATORIAMENTE as seções de "QUICK TAKES", "AGENDA DO DIA", "ENQUETE DO DIA" e os "RESULTADOS" de enquetes (desde que sejam sobre esportes, ciência, medicina, cinema ou temas factuais). NÃO delete perguntas nem opções de voto de enquetes temáticas. Copie-as exatamente como estão.
 
-TRATAMENTO DE IMAGENS:
+TRATAMENTO DE IMAGENS (FOCO EM ÁUDIO/PODCAST NOTEBOOKLM):
 - Você NÃO tem acesso visual às imagens. Elas aparecem no conteúdo apenas como `[Imagem: texto alternativo]`.
-- Para imagens de notícias mantidas, use o formato `[Descrição da Imagem: ...]` baseado EXCLUSIVAMENTE no texto alternativo e na legenda presentes no conteúdo.
+- CRÉDITOS FOTOGRÁFICOS SÃO PROIBIDOS: se o texto alternativo for apenas nome de agência ou fotógrafo (ex: "Fortune | Getty Images", "Globo | Reprodução", "Foto: João Silva", "Divulgação"), IGNORE E NÃO GERE nada para ela. Isso polui a fala do podcast.
+- APENAS quando a imagem contiver uma descrição informativa real de cena, mapa ou infográfico, use o formato `[Descrição da Imagem: ...]` baseado EXCLUSIVAMENTE nesse texto.
 - NUNCA invente detalhes visuais que não estejam escritos no texto alternativo ou na legenda.
-- Ignore imagens que sejam apenas logotipos, patrocinadores, grafismos decorativos ou sem texto alternativo informativo.
+- Ignore imagens que sejam logotipos, patrocinadores, grafismos decorativos, créditos de imagem ou sem descrição substancial.
 
 REGRAS DE FORMATAÇÃO MARKDOWN:
 - Entregue o resultado EXCLUSIVAMENTE em Markdown limpo.
 - NÃO crie saudações ou conversas na resposta (ex: "Aqui está o texto..."). Vá direto ao ponto.
-- Use o nível 1 (`#`) APENAS para o título principal (Data do documento). Use nível 2 (`##`) ou inferior para as notícias.
+- Use o nível 1 (`#`) RIGOROSAMENTE UMA ÚNICA VEZ para a Data do documento no topo (ex: `# 16 de outubro de 2026`). NUNCA use `#` no meio do texto.
+- Use nível 2 (`##`) para as notícias e seções principais, e nível 3 (`###`) para subseções.
 - Gere títulos únicos. Adicione contexto no título se houver repetição (ex: `## NBA - Lakers`).
 - NUNCA repita o mesmo título de notícia. Se um texto foi quebrado e a notícia continua, prossiga organicamente sem inventar um novo cabeçalho.
-- NUNCA coloque pontuação no final dos títulos (ex: `!`, `?`, `.`).
+- NUNCA coloque pontuação no final dos títulos (ex: `!`, `?`, `.`, `:`). Use `## A IA vai acabar com os empregos` em vez de `## A IA vai acabar com os empregos?`.
 - Deixe sempre UMA linha em branco antes e depois de listas.
 - Deixe espaços ao redor dos pipes de tabelas (ex: `| --- | --- |`).
 - Use apenas UM espaço após o marcador de lista (ex: `- item`).

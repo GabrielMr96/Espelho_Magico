@@ -84,8 +84,13 @@ def formatar_resultados(dados, data, filtros=None):
         if "regular season" in liga_lower:
             liga = "Major League Soccer"
 
+        score_casa = str(casa.get("score", "") or "").strip()
+        score_fora = str(fora.get("score", "") or "").strip()
+        if not score_casa or not score_fora:
+            continue
+
         jogos_por_liga.setdefault(liga, []).append(
-            f"{nome_casa} {casa.get('score', '')} x {fora.get('score', '')} {nome_fora}"
+            f"{nome_casa} {score_casa} x {score_fora} {nome_fora}"
         )
 
     if not jogos_por_liga:

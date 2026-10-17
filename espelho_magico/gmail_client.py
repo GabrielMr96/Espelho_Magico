@@ -1,7 +1,7 @@
-"""Autenticação Google e operações no Gmail."""
 import base64
 import re
 import threading
+import time
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -11,6 +11,7 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
 from . import config
 from .log import escape, logger
@@ -142,6 +143,28 @@ def _header(headers, nome, padrao):
     return next((h["value"] for h in headers if h.get("name", "").lower() == nome.lower()), padrao)
 
 
+def executar_requisicao_google(req, max_tentativas=5):
+    """Executa uma requisição do Google API Client de forma thread-safe e com backoff para rate limits."""
+    for tentativa in range(max_tentativas):
+        try:
+            with google_lock:
+                return req.execute()
+        except HttpError as e:
+            codigo = getattr(e.resp, "status", None)
+            if codigo in (403, 429) and tentativa < max_tentativas - 1:
+                espera = 15 * (tentativa + 1)
+                logger.warning(
+                    f"[yellow]⚠ Limite de requisições do Gmail (status {codigo}). "
+                    f"Aguardando {espera}s antes de tentar novamente...[/yellow]"
+                )
+                time.sleep(espera)
+                continue
+            if codigo in (500, 502, 503, 504) and tentativa < max_tentativas - 1:
+                time.sleep(5)
+                continue
+            raise
+
+
 def buscar_emails(gmail_service):
     """Lista os e-mails não lidos do marcador e extrai o conteúdo. Uma falha isolada não derruba o lote."""
     query = f"label:{config.GMAIL_LABEL} is:unread"
@@ -149,8 +172,9 @@ def buscar_emails(gmail_service):
     try:
         token = None
         while True:
-            with google_lock:
-                resp = gmail_service.users().messages().list(userId="me", q=query, pageToken=token).execute()
+            resp = executar_requisicao_google(
+                gmail_service.users().messages().list(userId="me", q=query, pageToken=token)
+            )
             ids.extend(m["id"] for m in resp.get("messages", []))
             token = resp.get("nextPageToken")
             if not token:
@@ -166,8 +190,9 @@ def buscar_emails(gmail_service):
     emails = []
     for msg_id in ids:
         try:
-            with google_lock:
-                detalhes = gmail_service.users().messages().get(userId="me", id=msg_id, format="full").execute()
+            detalhes = executar_requisicao_google(
+                gmail_service.users().messages().get(userId="me", id=msg_id, format="full")
+            )
             payload = detalhes.get("payload", {})
             html, texto = extrair_corpo(payload)
             conteudo = html or texto
@@ -182,6 +207,8 @@ def buscar_emails(gmail_service):
                 "conteudo_html": conteudo,
                 "eh_html": html is not None,
             })
+            # Pausa curta cooperativa para respeitar limites por segundo do Gmail
+            time.sleep(0.1)
         except Exception as e:
             logger.error(f"[bold red]✖ Falha ao ler e-mail {msg_id}: {escape(str(e))}[/bold red]")
     return emails
@@ -189,10 +216,11 @@ def buscar_emails(gmail_service):
 
 def marcar_como_lido(gmail_service, msg_id):
     try:
-        with google_lock:
+        executar_requisicao_google(
             gmail_service.users().messages().modify(
                 userId="me", id=msg_id, body={"removeLabelIds": ["UNREAD"]}
-            ).execute()
+            )
+        )
         logger.debug(f"E-mail {msg_id} marcado como lido.")
     except Exception as e:
         logger.error(f"Erro ao marcar mensagem {msg_id} como lida: {escape(str(e))}")

@@ -1,5 +1,11 @@
 from espelho_magico.drive_client import montar_query
-from espelho_magico.pipeline import agrupar_emails, deduplicar_secoes, maior_edicao_existente, nome_fallback
+from espelho_magico.pipeline import (
+    agrupar_emails,
+    deduplicar_secoes,
+    maior_edicao_existente,
+    nome_fallback,
+    sanitizar_markdown_final,
+)
 
 MAPA = {"tns sports": "Gol Contra", "the news": "Boletim Fora de Ordem", "peak": "Dispatch"}
 
@@ -75,3 +81,37 @@ def test_query_drive_escapa_aspas_e_ignora_lixeira():
     assert "name='D\\'Ávila #1'" in q
     assert "trashed=false" in q
     assert "'pasta123' in parents" in q
+
+
+def test_sanitizar_markdown_final():
+    texto = "\n".join([
+        "# 12 de Outubro de 2026",
+        "",
+        "## A IA vai acabar com empregos?",
+        "Texto da matéria. (Aprofunde)",
+        "",
+        "[Descrição da Imagem: Fortune | Getty Images]",
+        "[Descrição da Imagem: Gráfico detalhado de vendas de veículos elétricos]",
+        "",
+        "# 13 de Outubro de 2026",
+        "",
+        "## Outra Notícia Importante!",
+        "Mais texto com link do Twitter pic.twitter.com/abc1234 e https://t.co/xyz789.",
+    ])
+    out = sanitizar_markdown_final(texto)
+    import re
+    # Garante exatamente 1 H1 no documento todo
+    assert len(re.findall(r"^# ", out, re.M)) == 1
+    assert "# 12 de Outubro de 2026" in out
+    # O segundo H1 vira H2
+    assert "## 13 de Outubro de 2026" in out
+    # Pontuação final de cabeçalho removida
+    assert "## A IA vai acabar com empregos\n" in out
+    assert "## Outra Notícia Importante\n" in out
+    # (Aprofunde) e links de twitter removidos
+    assert "(Aprofunde)" not in out
+    assert "pic.twitter.com" not in out
+    assert "https://t.co" not in out
+    # Imagem de crédito descartada, imagem com descrição informativa preservada
+    assert "Fortune | Getty Images" not in out
+    assert "[Descrição da Imagem: Gráfico detalhado de vendas de veículos elétricos]" in out
