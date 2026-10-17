@@ -1,15 +1,20 @@
 # Orquestrador Espelho Mágico 🧙‍♂️
 
-Automação que lê newsletters do Gmail (marcador `Espelho_Magico`), arranca o lixo (anúncios, patrocínios, CTAs, rodapés) e converte o puro suco da informação em Markdown limpo para injeção no NotebookLM. Os arquivos são salvos localmente e enviados ao Google Drive.
+Automação que lê newsletters do Gmail (marcador `Espelho_Magico`), arranca o lixo (anúncios, patrocínios, CTAs, rodapés e créditos fotográficos) e converte o puro suco da informação em Markdown rigorosamente estruturado e limpo para injeção no NotebookLM. Os arquivos são salvos localmente e sincronizados com o Google Drive.
 
-## Fluxo
+## 🔄 Fluxo de Processamento
 
-1. Busca os e-mails **não lidos** do marcador no Gmail.
-2. Agrupa por newsletter (prefixos em `config.json`) e define o número da edição automaticamente.
-3. Pré-limpa o HTML para Markdown (remove estilos, rastreadores e URLs, o que economiza muitos tokens).
-4. Extrai o conteúdo com o Gemini (rotação de chaves + fallback de modelos), com Perplexity opcional.
-5. No *Gol Contra*, inclui os placares do dia anterior via API da ESPN.
-6. Salva em `resultados_markdown/`, sobe para o Drive e marca os e-mails como lidos.
+1. **Busca Resiliente no Gmail**: Busca e-mails **não lidos** no marcador configurado, com pacing e backoff automático para respeitar limites de taxa por minuto do Google Cloud (Rate Limit 403).
+2. **Agrupamento Inteligente**: Agrupa mensagens por newsletter (mapeamento em `config.json`), detecta o histórico e calcula a numeração da próxima edição automaticamente.
+3. **Pré-limpeza HTML → Markdown**: Converte tabelas de layout para blocos enxutos, remove scripts/estilos e expurga créditos fotográficos puros (`Manoella Mello | Globo`, `Fortune | Getty Images`), economizando até 90% dos tokens antes do envio à IA.
+4. **Extração Literal com IA**: Extrai o conteúdo sem resumir ou parafrasear usando o Gemini (com rotação de chaves e fallback entre modelos Flash ativos), com Perplexity opcional.
+5. **Placares Esportivos**: No *Gol Contra*, injeta automaticamente os placares do dia anterior via API pública da ESPN, filtrando por ligas de elite e clubes de destaque.
+6. **Sanitização para NotebookLM (Áudio/Podcast)**:
+   - Garante **rigorosamente 1 único cabeçalho `#`** por arquivo (com a data da edição);
+   - Remove pontuações terminais (`?`, `!`, `.`) dos títulos `##` para capítulos perfeitos;
+   - Elimina resíduos visuais como `(Aprofunde)` e links quebrados de redes sociais;
+   - Deduplica seções repetidas mantendo novos desdobramentos.
+7. **Publicação**: Salva em `resultados_markdown/`, envia/atualiza no Google Drive e marca os e-mails como lidos no Gmail.
 
 ## 🚀 Como rodar
 
@@ -21,43 +26,43 @@ Automação que lê newsletters do Gmail (marcador `Espelho_Magico`), arranca o 
    ```
 
 2. **Chaves e credenciais**
-   * Copie `.env.example` para `.env` e preencha ao menos `GEMINI_API_KEY` (várias chaves separadas por vírgula).
-   * Coloque o `credentials.json` (OAuth do Google Cloud, com APIs Gmail e Drive habilitadas) na raiz, ou na pasta indicada em `ESPELHO_SECRETS_DIR`. O `token.json` é gerado no primeiro login.
+   * Copie `.env.example` para `.env` e preencha ao menos `GEMINI_API_KEY` (uma ou mais chaves separadas por vírgula para rotação).
+   * Coloque o `credentials.json` (OAuth do Google Cloud com APIs Gmail e Drive habilitadas) na raiz ou na pasta indicada por `ESPELHO_SECRETS_DIR`. O `token.json` é gerado automaticamente no primeiro login via navegador.
 
 3. **Execução**
    ```powershell
    python orquestrador.py                       # modo normal (interativo)
-   python orquestrador.py --dry-run             # testa sem Drive, sem marcar e-mails
-   python orquestrador.py --grupo "tns sports"  # só um grupo
-   python orquestrador.py --unificar sim        # unifica grupos com 2+ e-mails sem perguntar
-   python orquestrador.py --sem-interacao       # para o Agendador de Tarefas
-   python orquestrador.py --help
+   python orquestrador.py --dry-run             # simulação: salva em _dry_run sem alterar Gmail/Drive
+   python orquestrador.py --grupo "the news"    # filtra apenas um grupo específico
+   python orquestrador.py --unificar sim        # mescla 2+ e-mails do mesmo grupo sem perguntar
+   python orquestrador.py --sem-interacao       # para execução automatizada (Agendador de Tarefas)
+   python orquestrador.py --help                # opções disponíveis
    ```
 
 ## ⚙️ Configuração
 
 | Onde | O quê |
 | --- | --- |
-| `config.json` | Prefixos → nomes das newsletters, lista de modelos Gemini (ordem de prioridade), filtros de ligas e clubes |
-| `.env` | Chaves, `IA_PADRAO`, retentativas (`MAX_RODADAS`, `BACKOFF_*`), `MAX_WORKERS`, `DRIVE_FOLDER_ID`, `GMAIL_LABEL`, `HTML_PRECLEAN`... (veja `.env.example`) |
-| `espelho_magico/prompts/` | Prompt principal e complemento do modo unificação |
+| `config.json` | Mapeamento de prefixos → títulos, ordem de modelos Gemini (`gemini-3.8-flash`, `gemini-3.7-flash`, etc.), filtros de ligas e clubes |
+| `.env` | Chaves de API, `IA_PADRAO`, retentativas (`MAX_RODADAS`, `BACKOFF_*`), workers paralelos (`MAX_WORKERS`), IDs de pasta do Drive, label do Gmail |
+| `espelho_magico/prompts/` | Diretrizes de extração literal, tratamento de imagens para áudio e modo unificação |
 
 ## 📁 Estrutura
 
 ```
-orquestrador.py            # ponto de entrada (CLI)
-config.json                # configuração editável
+orquestrador.py            # ponto de entrada da CLI
+config.json                # mapeamentos e configurações de modelos/ligas
 espelho_magico/
-├── config.py              # caminhos absolutos + variáveis de ambiente
-├── log.py                 # console (Rich) + arquivo rotativo
-├── gmail_client.py        # autenticação, busca e parsing MIME
-├── drive_client.py        # upload/atualização no Drive
-├── html_cleaner.py        # pré-limpeza HTML → Markdown
-├── llm.py                 # Gemini (retentativas limitadas) + Perplexity
-├── futebol.py             # placares ESPN + controle de datas
-├── pipeline.py            # agrupamento, extração, deduplicação, publicação
-└── prompts/
-tests/                     # pytest
+├── config.py              # caminhos absolutos e variáveis de ambiente
+├── log.py                 # formatação de console (Rich) e rotação de logs
+├── gmail_client.py        # autenticação OAuth, busca resiliente e parsing MIME
+├── drive_client.py        # upload e atualização sem duplicatas no Drive
+├── html_cleaner.py        # pré-limpeza HTML → Markdown e filtro de créditos
+├── llm.py                 # rotação de chaves e fallback Gemini / Perplexity
+├── futebol.py             # placares ESPN com validação e controle de datas
+├── pipeline.py            # agrupamento, extração, deduplicação e sanitização final
+└── prompts/               # templates de prompts para o Gemini
+tests/                     # suíte completa de testes unitários (pytest)
 ```
 
 ## 🧪 Testes
@@ -69,6 +74,6 @@ python -m pytest
 
 ## 🛠️ Utilitários
 
-* `python validar_chaves.py`: verifica se as chaves Gemini são válidas.
-* `python monitora_cota.py`: avisa com som quando a cota do Gemini (429) for restaurada.
-* `python teste_futebol.py`: mostra os placares filtrados de ontem.
+* `python validar_chaves.py`: verifica o status e cota das chaves Gemini configuradas no `.env`.
+* `python monitora_cota.py`: monitora e avisa com som quando uma cota 429 for restabelecida.
+* `python teste_futebol.py`: testa e exibe os placares esportivos de ontem via API da ESPN.

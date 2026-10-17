@@ -1,12 +1,18 @@
 # Ambientes e Secrets
 .env
+.env.local
 .venv/
 env/
+venv/
 __pycache__/
 *.pyc
 .pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
+.mypy_cache/
 
-# Tokens do Google
+# Tokens e Credenciais do Google
 credentials.json
 token.json
 
@@ -14,8 +20,22 @@ token.json
 *.log
 *.log.*
 
-# Output e Cache do Script (Arquivos que não devem subir)
+# Output e Cache do Script (Arquivos locais e temporários)
 resultados_markdown/
 espn_page.json
 controle_gol.json
 imagens_extraidas/
+scratch/
+crus/
+
+# Configurações de IDE e Agentes
+.vscode/
+.idea/
+.agents/
+
+# Sistema Operacional e Temporários
+.DS_Store
+Thumbs.db
+*.tmp
+*.bak
+*.swp
