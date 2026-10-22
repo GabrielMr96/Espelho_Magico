@@ -66,11 +66,18 @@ GEMINI_MAX_OUTPUT_TOKENS = _env_int("GEMINI_MAX_OUTPUT_TOKENS", 0) or None
 IA_PADRAO = os.environ.get("IA_PADRAO", "gemini").lower()
 PERPLEXITY_API_KEY = os.environ.get("PERPLEXITY_API_KEY")
 PERPLEXITY_MODEL = os.environ.get("PERPLEXITY_MODEL", "sonar-pro")
+# Último recurso (opt-in): se o Gemini falhar em tudo, tenta o Perplexity antes de desistir
+FALLBACK_PERPLEXITY = _env_bool("FALLBACK_PERPLEXITY", False)
 
-# Política de retentativas (pior caso fica na casa de minutos, não horas)
-MAX_RODADAS = _env_int("MAX_RODADAS", 4)
-BACKOFF_BASE = _env_int("BACKOFF_BASE", 15)
+# Timeout por requisição ao Gemini (s). Evita ficar minutos pendurado esperando um 503.
+GEMINI_TIMEOUT = _env_int("GEMINI_TIMEOUT", 180)
+
+# Política de retentativas (pior caso fica na casa de minutos, não horas).
+# As rodadas param no que vier primeiro: MAX_RODADAS ou IA_TEMPO_MAX segundos por extração.
+MAX_RODADAS = _env_int("MAX_RODADAS", 8)
+BACKOFF_BASE = _env_int("BACKOFF_BASE", 20)
 BACKOFF_MAX = _env_int("BACKOFF_MAX", 300)
+IA_TEMPO_MAX = _env_int("IA_TEMPO_MAX", 600)
 
 # --- Execução ----------------------------------------------------------------
 HTML_PRECLEAN = _env_bool("HTML_PRECLEAN", True)

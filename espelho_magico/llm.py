@@ -26,7 +26,7 @@ class ErroTransitorio(Exception):
 
     def __init__(self, mensagem, motivo):
         super().__init__(mensagem)
-        self.motivo = motivo  # "429", "503", "rede", "vazio"
+        self.motivo = motivo  # "429", "503", "rede", "timeout", "vazio"
 
 
 class RespostaTruncada(Exception):
@@ -38,14 +38,20 @@ class RespostaTruncada(Exception):
 
 
 class GerenciadorGemini:
-    def __init__(self, api_keys, modelos, max_output_tokens=None, sleep=time.sleep, client_factory=None):
+    def __init__(self, api_keys, modelos, max_output_tokens=None, sleep=time.sleep, client_factory=None,
+                 timeout=None, clock=time.monotonic):
         if not api_keys:
             raise ValueError("Nenhuma GEMINI_API_KEY configurada.")
-        factory = client_factory or (lambda k: genai.Client(api_key=k))
-        self.clientes = [factory(k) for k in api_keys]
+        self.timeout = timeout
+        if client_factory is None:
+            # Timeout no cliente: sem ele, um 503 pode levar minutos para voltar (já vimos ~5 min).
+            http_options = types.HttpOptions(timeout=int(timeout * 1000)) if timeout else None
+            client_factory = lambda k: genai.Client(api_key=k, http_options=http_options)  # noqa: E731
+        self.clientes = [client_factory(k) for k in api_keys]
         self.modelos = list(modelos)
         self.max_output_tokens = max_output_tokens
         self._sleep = sleep
+        self._clock = clock
         self._indice = 0
         self._lock = threading.Lock()
         self._modelos_404 = set()
@@ -71,6 +77,12 @@ class GerenciadorGemini:
         if "NOT_FOUND" in texto:
             return 404
         return None
+
+    @staticmethod
+    def _detalhe(erro, limite=140):
+        """Mensagem curta do servidor (ex.: 'The model is overloaded...') para o log."""
+        texto = (getattr(erro, "message", None) or str(erro) or "").strip().replace("\n", " ")
+        return texto if len(texto) <= limite else texto[: limite - 1] + "…"
 
     def gerar(self, conteudo, prompt, modelo):
         """Uma tentativa com o modelo dado, passando por todas as chaves em caso de 429."""
@@ -101,9 +113,13 @@ class GerenciadorGemini:
                         continue
                     raise ErroTransitorio(f"Cota esgotada em todas as chaves para {modelo}.", "429")
                 if codigo in (500, 502, 503, 504):
-                    raise ErroTransitorio(f"Serviço indisponível ({codigo}) no {modelo}.", "503")
+                    raise ErroTransitorio(
+                        f"Serviço indisponível ({codigo}) no {modelo}: {self._detalhe(e)}", "503"
+                    )
                 raise
-            except (httpx.HTTPError, requests.RequestException, ConnectionError, TimeoutError) as e:
+            except (httpx.TimeoutException, TimeoutError):
+                raise ErroTransitorio(f"Sem resposta do {modelo} em {self.timeout or '?'}s (timeout).", "timeout")
+            except (httpx.HTTPError, requests.RequestException, ConnectionError) as e:
                 raise ErroTransitorio(f"Falha de rede com {modelo}: {e}", "rede")
 
             texto = resposta.text
@@ -117,18 +133,24 @@ class GerenciadorGemini:
             return texto
         raise ErroTransitorio(f"Cota esgotada em todas as chaves para {modelo}.", "429")
 
-    def extrair(self, conteudo, prompt, max_rodadas=None, backoff_base=None, backoff_max=None):
+    def extrair(self, conteudo, prompt, max_rodadas=None, backoff_base=None, backoff_max=None, tempo_max=None):
         """Percorre os modelos em ordem; se todos falharem por erro transitório, espera e repete.
 
-        O pior caso fica limitado a max_rodadas × backoff_max (minutos, não horas).
+        Para no que vier primeiro: max_rodadas ou ~tempo_max segundos (minutos, não horas).
+        Sobrecarga (503) do Gemini costuma durar alguns minutos, então vale insistir com
+        espera crescente em vez de desistir cedo ou trocar por modelos inferiores.
         """
         max_rodadas = max_rodadas or config.MAX_RODADAS
         backoff_base = backoff_base if backoff_base is not None else config.BACKOFF_BASE
         backoff_max = backoff_max if backoff_max is not None else config.BACKOFF_MAX
+        tempo_max = tempo_max if tempo_max is not None else config.IA_TEMPO_MAX
 
+        inicio = self._clock()
         melhor_truncado = None
         motivos = set()
+        rodadas_feitas = 0
         for rodada in range(max_rodadas):
+            rodadas_feitas = rodada + 1
             for modelo in self.modelos:
                 if modelo in self._modelos_404:
                     continue
@@ -155,13 +177,23 @@ class GerenciadorGemini:
                 break
             if rodada < max_rodadas - 1:
                 espera = min(backoff_base * (2 ** rodada), backoff_max) + random.uniform(0, 5)
+                if tempo_max:
+                    restante = tempo_max - (self._clock() - inicio)
+                    if restante < 10:
+                        break  # orçamento de tempo esgotado
+                    espera = min(espera, restante)
+                decorrido = self._clock() - inicio
                 logger.warning(
                     f"[bold yellow]⏳ Todos os modelos falharam (motivos: {', '.join(sorted(motivos))}). "
-                    f"Aguardando {espera:.0f}s antes da rodada {rodada + 2}/{max_rodadas}...[/bold yellow]"
+                    f"Aguardando {espera:.0f}s antes da rodada {rodada + 2}/{max_rodadas} "
+                    f"({decorrido / 60:.1f} de {tempo_max / 60:.0f} min)...[/bold yellow]"
                 )
                 self._sleep(espera)
 
-        raise FalhaExtracao(f"Falha em todos os modelos após {max_rodadas} rodada(s). Motivos: {', '.join(sorted(motivos)) or 'n/d'}")
+        raise FalhaExtracao(
+            f"Falha em todos os modelos após {rodadas_feitas} rodada(s) em {(self._clock() - inicio) / 60:.1f} min. "
+            f"Motivos: {', '.join(sorted(motivos)) or 'n/d'}"
+        )
 
 
 def extrair_com_perplexity(conteudo, prompt):
@@ -202,7 +234,8 @@ class Extrator:
 
     def __init__(self, gemini=None):
         self.gemini = gemini or GerenciadorGemini(
-            config.GEMINI_API_KEYS, config.GEMINI_MODELS, config.GEMINI_MAX_OUTPUT_TOKENS
+            config.GEMINI_API_KEYS, config.GEMINI_MODELS, config.GEMINI_MAX_OUTPUT_TOKENS,
+            timeout=config.GEMINI_TIMEOUT,
         )
 
     def extrair(self, conteudo, prompt):
@@ -211,4 +244,14 @@ class Extrator:
                 return extrair_com_perplexity(conteudo, prompt)
             except Exception as e:
                 logger.warning(f"[yellow]⚠ Erro no Perplexity: {escape(str(e))}. Usando Gemini como fallback...[/yellow]")
-        return self.gemini.extrair(conteudo, prompt)
+        try:
+            return self.gemini.extrair(conteudo, prompt)
+        except FalhaExtracao as falha:
+            if not (config.FALLBACK_PERPLEXITY and config.PERPLEXITY_API_KEY and config.IA_PADRAO != "perplexity"):
+                raise
+            logger.warning(f"[yellow]⚠ {escape(str(falha))} Tentando Perplexity como último recurso...[/yellow]")
+            try:
+                return extrair_com_perplexity(conteudo, prompt)
+            except Exception as e:
+                logger.warning(f"[yellow]⚠ Perplexity também falhou: {escape(str(e))}[/yellow]")
+                raise falha

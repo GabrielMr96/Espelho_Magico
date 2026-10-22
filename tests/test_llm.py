@@ -74,3 +74,27 @@ def test_resposta_vazia_e_transitoria():
     c = ClienteFake({"m1": _resposta(None), "m2": _resposta("ok")})
     g, _ = _gerenciador([c], ["m1", "m2"])
     assert g.extrair("c", "p") == "ok"
+
+
+def test_orcamento_de_tempo_limita_rodadas():
+    relogio = [0.0]
+    esperas = []
+
+    def dormir(s):
+        esperas.append(s)
+        relogio[0] += s
+
+    c = ClienteFake({"m1": _api_error(503)})
+    g = GerenciadorGemini(["k"], ["m1"], sleep=dormir, client_factory=lambda k: c, clock=lambda: relogio[0])
+    with pytest.raises(FalhaExtracao):
+        g.extrair("c", "p", max_rodadas=50, backoff_base=20, backoff_max=300, tempo_max=120)
+    assert sum(esperas) <= 120
+    assert len(esperas) < 49
+
+
+def test_timeout_e_transitorio_e_tenta_proximo_modelo():
+    import httpx
+
+    c = ClienteFake({"lento": httpx.ReadTimeout("timed out"), "m2": _resposta("ok")})
+    g, _ = _gerenciador([c], ["lento", "m2"])
+    assert g.extrair("c", "p") == "ok"
