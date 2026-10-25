@@ -28,6 +28,7 @@ class Opcoes:
     grupos: list = field(default_factory=list)
     interativo: bool = True
     max_workers: int = 0
+    ia: str = ""  # "" = IA_PADRAO do .env | "gemini" | "alt" | "perplexity"
 
 
 @dataclass
@@ -391,7 +392,12 @@ def executar(opcoes):
     if not emails:
         return 0
 
-    pipeline = Pipeline(opcoes, Extrator(), drive_service, gmail_service)
+    try:
+        extrator = Extrator(ia_padrao=opcoes.ia or None)
+    except ValueError as e:
+        logger.error(f"[bold red]Erro de configuração da IA:[/bold red] {escape(str(e))}")
+        return 1
+    pipeline = Pipeline(opcoes, extrator, drive_service, gmail_service)
     configs = pipeline.preparar_grupos(emails)
     if not configs:
         logger.info("[yellow]Nenhum grupo corresponde aos filtros informados.[/yellow]")

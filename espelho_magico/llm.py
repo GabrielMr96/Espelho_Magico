@@ -1,4 +1,4 @@
-"""Extração via IA: Gemini (rotação de chaves + fallback de modelos) e Perplexity."""
+"""Extração via IA: Gemini (rotação de chaves + fallback de modelos), provedor alternativo e Perplexity."""
 import random
 import threading
 import time
@@ -229,17 +229,123 @@ def verificar_completude(entrada, saida, limite=0.15):
     return len(saida) >= len(entrada) * limite
 
 
-class Extrator:
-    """Fachada usada pelo pipeline: Perplexity opcional + Gemini com fallback."""
+class ProvedorAlternativo:
+    """Provedor fora do Google: Claude (API nativa da Anthropic) ou qualquer API compatível com OpenAI."""
 
-    def __init__(self, gemini=None):
+    URLS = {"anthropic": "https://api.anthropic.com", "openai": "https://api.openai.com/v1"}
+
+    def __init__(self, provedor, api_key, modelo, base_url="", max_tokens=16000, timeout=600,
+                 tentativas=4, sleep=time.sleep, post=None):
+        if provedor not in self.URLS:
+            raise ValueError(f"ALT_PROVEDOR inválido: {provedor!r} (use 'anthropic' ou 'openai').")
+        if not api_key or not modelo:
+            raise ValueError("ALT_API_KEY e ALT_MODELO são obrigatórios para o provedor alternativo.")
+        self.provedor = provedor
+        self.api_key = api_key
+        self.modelo = modelo
+        self.base_url = (base_url or self.URLS[provedor]).rstrip("/")
+        self.max_tokens = max_tokens
+        self.timeout = timeout
+        self.tentativas = tentativas
+        self._sleep = sleep
+        self._post = post or requests.post
+        self._sem_temperatura = False  # alguns modelos de raciocínio só aceitam o padrão
+
+    @classmethod
+    def do_config(cls):
+        if not (config.ALT_PROVEDOR and config.ALT_API_KEY and config.ALT_MODELO):
+            return None
+        return cls(config.ALT_PROVEDOR, config.ALT_API_KEY, config.ALT_MODELO, config.ALT_BASE_URL,
+                   config.ALT_MAX_TOKENS, config.ALT_TIMEOUT)
+
+    @property
+    def nome(self):
+        return f"{self.provedor}/{self.modelo}"
+
+    def _requisicao(self, conteudo, prompt):
+        if self.provedor == "anthropic":
+            corpo = {
+                "model": self.modelo, "max_tokens": self.max_tokens, "system": prompt,
+                "messages": [{"role": "user", "content": conteudo}],
+            }
+            cabecalhos = {"x-api-key": self.api_key, "anthropic-version": "2023-06-01"}
+            url = f"{self.base_url}/v1/messages"
+        else:
+            # A API oficial da OpenAI usa max_completion_tokens; as compatíveis ainda usam max_tokens
+            campo = "max_completion_tokens" if "api.openai.com" in self.base_url else "max_tokens"
+            corpo = {
+                "model": self.modelo, campo: self.max_tokens,
+                "messages": [{"role": "system", "content": prompt}, {"role": "user", "content": conteudo}],
+            }
+            cabecalhos = {"Authorization": f"Bearer {self.api_key}"}
+            url = f"{self.base_url}/chat/completions"
+        if not self._sem_temperatura:
+            corpo["temperature"] = 0.2
+        cabecalhos["Content-Type"] = "application/json"
+        return url, corpo, cabecalhos
+
+    def _ler(self, dados):
+        if self.provedor == "anthropic":
+            texto = "".join(b.get("text", "") for b in dados.get("content", []) if b.get("type") == "text")
+            truncado = dados.get("stop_reason") == "max_tokens"
+        else:
+            escolha = dados["choices"][0]
+            texto = escolha["message"].get("content") or ""
+            truncado = escolha.get("finish_reason") == "length"
+        return texto, truncado
+
+    def gerar(self, conteudo, prompt):
+        ultimo_erro = "n/d"
+        for tentativa in range(self.tentativas):
+            url, corpo, cabecalhos = self._requisicao(conteudo, prompt)
+            logger.info(f"[cyan]➜ Processando com {self.nome} (tentativa {tentativa + 1}/{self.tentativas})...[/cyan]")
+            try:
+                resposta = self._post(url, json=corpo, headers=cabecalhos, timeout=self.timeout)
+            except (requests.RequestException, ConnectionError, TimeoutError) as e:
+                ultimo_erro = f"rede: {e}"
+            else:
+                if resposta.status_code == 200:
+                    texto, truncado = self._ler(resposta.json())
+                    if not texto.strip():
+                        raise FalhaExtracao(f"Resposta vazia do {self.nome}.")
+                    if truncado:
+                        logger.warning(f"[yellow]⚠ {self.nome} atingiu ALT_MAX_TOKENS; a resposta pode estar incompleta.[/yellow]")
+                    return texto
+                detalhe = resposta.text[:300]
+                if resposta.status_code == 400 and "temperature" in detalhe and not self._sem_temperatura:
+                    self._sem_temperatura = True
+                    continue
+                if resposta.status_code not in (408, 409, 429, 500, 502, 503, 504, 529):
+                    raise FalhaExtracao(f"{self.nome} recusou a requisição ({resposta.status_code}): {detalhe}")
+                ultimo_erro = f"{resposta.status_code}: {detalhe}"
+            if tentativa < self.tentativas - 1:
+                espera = min(10 * (2 ** tentativa), 90) + random.uniform(0, 3)
+                logger.warning(f"[yellow]  ⚠ {self.nome} indisponível ({escape(ultimo_erro[:140])}). "
+                               f"Nova tentativa em {espera:.0f}s...[/yellow]")
+                self._sleep(espera)
+        raise FalhaExtracao(f"{self.nome} falhou após {self.tentativas} tentativa(s): {ultimo_erro[:200]}")
+
+
+class Extrator:
+    """Fachada usada pelo pipeline: Gemini com fallback para provedor alternativo e/ou Perplexity."""
+
+    def __init__(self, gemini=None, alternativo=None, ia_padrao=None):
+        self.ia_padrao = (ia_padrao or config.IA_PADRAO).lower()
+        self.alternativo = alternativo if alternativo is not None else ProvedorAlternativo.do_config()
+        if self.ia_padrao == "alt" and not self.alternativo:
+            raise ValueError("IA 'alt' escolhida, mas ALT_PROVEDOR/ALT_API_KEY/ALT_MODELO não estão no .env.")
         self.gemini = gemini or GerenciadorGemini(
             config.GEMINI_API_KEYS, config.GEMINI_MODELS, config.GEMINI_MAX_OUTPUT_TOKENS,
             timeout=config.GEMINI_TIMEOUT,
         )
 
     def extrair(self, conteudo, prompt):
-        if config.IA_PADRAO == "perplexity":
+        if self.ia_padrao == "alt":
+            try:
+                return self.alternativo.gerar(conteudo, prompt)
+            except FalhaExtracao as e:
+                logger.warning(f"[yellow]⚠ {escape(str(e))} Usando Gemini como fallback...[/yellow]")
+        if self.ia_padrao == "perplexity":
             try:
                 return extrair_com_perplexity(conteudo, prompt)
             except Exception as e:
@@ -247,8 +353,15 @@ class Extrator:
         try:
             return self.gemini.extrair(conteudo, prompt)
         except FalhaExtracao as falha:
-            if not (config.FALLBACK_PERPLEXITY and config.PERPLEXITY_API_KEY and config.IA_PADRAO != "perplexity"):
-                raise
+            # Gemini fora do ar (503 em todos os modelos): sai do Google em vez de desistir
+            if self.alternativo and config.FALLBACK_ALT and self.ia_padrao != "alt":
+                logger.warning(f"[yellow]⚠ {escape(str(falha))} Tentando {self.alternativo.nome}...[/yellow]")
+                try:
+                    return self.alternativo.gerar(conteudo, prompt)
+                except FalhaExtracao as e:
+                    logger.warning(f"[yellow]⚠ {escape(str(e))}[/yellow]")
+            if not (config.FALLBACK_PERPLEXITY and config.PERPLEXITY_API_KEY and self.ia_padrao != "perplexity"):
+                raise falha
             logger.warning(f"[yellow]⚠ {escape(str(falha))} Tentando Perplexity como último recurso...[/yellow]")
             try:
                 return extrair_com_perplexity(conteudo, prompt)

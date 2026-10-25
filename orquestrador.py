@@ -5,6 +5,7 @@ Exemplos:
     python orquestrador.py --dry-run
     python orquestrador.py --grupo "tns sports" --unificar sim
     python orquestrador.py --sem-interacao   # para o Agendador de Tarefas
+    python orquestrador.py --dry-run --ia alt --grupo games   # testa o provedor alternativo
 """
 import argparse
 import sys
@@ -26,6 +27,9 @@ def parse_args(argv=None):
                         help="Nunca faz perguntas (edição sem histórico usa a data; unificação segue --unificar).")
     parser.add_argument("--max-workers", type=int, default=0,
                         help="Grupos processados em paralelo (padrão: MAX_WORKERS do .env ou nº de chaves, até 3).")
+    parser.add_argument("--ia", choices=["gemini", "alt", "perplexity"], default="",
+                        help="IA principal nesta execução (padrão: IA_PADRAO do .env). "
+                             "'alt' usa o provedor ALT_* do .env, com Gemini de fallback.")
     return parser.parse_args(argv)
 
 
@@ -38,6 +42,7 @@ def main(argv=None):
         grupos=args.grupo,
         interativo=interativo_disponivel() and not args.sem_interacao,
         max_workers=args.max_workers,
+        ia=args.ia,
     )
     return executar(opcoes)
 

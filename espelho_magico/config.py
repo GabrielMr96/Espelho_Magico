@@ -63,11 +63,23 @@ GEMINI_API_KEYS = _env_lista("GEMINI_API_KEY")
 # GEMINI_MODELS no .env (separado por vírgula) sobrescreve a lista do config.json
 GEMINI_MODELS = list(dict.fromkeys(_env_lista("GEMINI_MODELS") or _CONFIG["gemini_models"]))
 GEMINI_MAX_OUTPUT_TOKENS = _env_int("GEMINI_MAX_OUTPUT_TOKENS", 0) or None
+# gemini (padrão) | alt (provedor alternativo abaixo, com Gemini de fallback) | perplexity
 IA_PADRAO = os.environ.get("IA_PADRAO", "gemini").lower()
 PERPLEXITY_API_KEY = os.environ.get("PERPLEXITY_API_KEY")
 PERPLEXITY_MODEL = os.environ.get("PERPLEXITY_MODEL", "sonar-pro")
 # Último recurso (opt-in): se o Gemini falhar em tudo, tenta o Perplexity antes de desistir
 FALLBACK_PERPLEXITY = _env_bool("FALLBACK_PERPLEXITY", False)
+
+# Provedor alternativo (fora do Google), para quando o Gemini estiver fora do ar (503) ou para comparar qualidade.
+# ALT_PROVEDOR: "anthropic" (Claude, API nativa) ou "openai" (OpenAI e compatíveis: OpenRouter, Groq...)
+ALT_PROVEDOR = os.environ.get("ALT_PROVEDOR", "").strip().lower()
+ALT_API_KEY = os.environ.get("ALT_API_KEY", "").strip()
+ALT_MODELO = os.environ.get("ALT_MODELO", "").strip()
+ALT_BASE_URL = os.environ.get("ALT_BASE_URL", "").strip()  # vazio = URL oficial do provedor
+ALT_MAX_TOKENS = _env_int("ALT_MAX_TOKENS", 16000)
+ALT_TIMEOUT = _env_int("ALT_TIMEOUT", 600)
+# Se configurado, entra automaticamente quando o Gemini esgotar as rodadas
+FALLBACK_ALT = _env_bool("FALLBACK_ALT", True)
 
 # Timeout por requisição ao Gemini (s). Evita ficar minutos pendurado esperando um 503.
 GEMINI_TIMEOUT = _env_int("GEMINI_TIMEOUT", 180)
