@@ -5,8 +5,19 @@
 .venv/
 env/
 venv/
+ENV/
+*.pem
+*.key
+*.cert
+*.crt
+*.pfx
+client_secret*.json
+service_account*.json
+
+# Bytecode e Cache Python
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
 .pytest_cache/
 .coverage
 htmlcov/

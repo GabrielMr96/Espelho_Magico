@@ -71,3 +71,69 @@ def test_coletar_resultados_falha_total_nao_avanca(tmp_path):
 
     texto, ultima_ok = futebol.coletar_resultados(datetime.date(2026, 10, 12), buscar, controle)
     assert texto == "" and ultima_ok is None
+
+
+def test_nome_liga_amigavel_e_formatar_resultados_psg():
+    """Garante que jogos do PSG com regular-season e fra.w.1/fra.1 fiquem em Ligue 1 e não MLS."""
+    evento_psg = {
+        "season": {"slug": "regular-season"},
+        "links": [{"href": "https://www.espn.com/soccer/match/_/gameId/401885655/league/fra.w.1"}],
+        "competitions": [{
+            "altGameNote": "Première Ligue",
+            "competitors": [
+                {"homeAway": "home", "score": "1", "team": {"shortDisplayName": "PSG", "name": "Paris Saint-Germain"}},
+                {"homeAway": "away", "score": "0", "team": {"shortDisplayName": "Montpellier", "name": "Montpellier"}},
+            ]
+        }],
+    }
+    evento_mls = {
+        "season": {"slug": "regular-season"},
+        "links": [{"href": "https://www.espn.com/soccer/match/_/gameId/761891/league/usa.1"}],
+        "competitions": [{
+            "altGameNote": "MLS",
+            "competitors": [
+                {"homeAway": "home", "score": "2", "team": {"shortDisplayName": "Red Bull NY", "name": "Red Bulls"}},
+                {"homeAway": "away", "score": "0", "team": {"shortDisplayName": "Miami", "name": "Inter Miami CF"}},
+            ]
+        }],
+    }
+    evento_sula = {
+        "season": {"slug": "semifinals"},
+        "links": [{"href": "https://www.espn.com/soccer/match/_/gameId/401913957/league/conmebol.sudamericana"}],
+        "competitions": [{
+            "altGameNote": "CONMEBOL Sudamericana, Semifinals",
+            "competitors": [
+                {"homeAway": "home", "score": "1", "team": {"shortDisplayName": "Vasco", "name": "Vasco da Gama"}},
+                {"homeAway": "away", "score": "3", "team": {"shortDisplayName": "Boca", "name": "Boca Juniors"}},
+            ]
+        }],
+    }
+    evento_champions = {
+        "season": {"slug": "league-phase"},
+        "links": [{"href": "https://www.espn.com/soccer/match/_/gameId/401915313/league/uefa.champions"}],
+        "competitions": [{
+            "altGameNote": "UEFA Champions League, League Phase",
+            "competitors": [
+                {"homeAway": "home", "score": "4", "team": {"shortDisplayName": "Real Madrid", "name": "Real Madrid"}},
+                {"homeAway": "away", "score": "1", "team": {"shortDisplayName": "RB Leipzig", "name": "RB Leipzig"}},
+            ]
+        }],
+    }
+
+    assert futebol.nome_liga_amigavel(evento_psg) == "Ligue 1"
+    assert futebol.nome_liga_amigavel(evento_mls) == "Major League Soccer"
+    assert futebol.nome_liga_amigavel(evento_sula) == "Copa Sudamericana"
+    assert futebol.nome_liga_amigavel(evento_champions) == "UEFA Champions League"
+
+    dados = {"events": [evento_psg, evento_mls, evento_sula, evento_champions]}
+    md = futebol.formatar_resultados(dados, datetime.date(2026, 10, 23))
+
+    assert "### Ligue 1\n- PSG 1 x 0 Montpellier" in md
+    assert "### Major League Soccer\n- Red Bull NY 2 x 0 Miami" in md
+    assert "### Copa Sudamericana\n- Vasco 1 x 3 Boca" in md
+    assert "### UEFA Champions League\n- Real Madrid 4 x 1 RB Leipzig" in md
+    assert "Major League Soccer\n- PSG" not in md
+    assert "### Regular Season" not in md
+    assert "### Semifinals" not in md
+    assert "### League Phase" not in md
+

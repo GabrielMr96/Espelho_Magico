@@ -23,19 +23,93 @@ def eh_time_destaque(nome, clubes_destaque):
             if "inter miami" in nome or ("miami" in nome and "inter" in nome):
                 return True
             continue
-        if c in ("inter milan", "internacional") and ("bogota" in nome or "bogotá" in nome):
+        if c in ("inter milan", "internacional") and any(x in nome for x in ("bogota", "bogotá", "tecla", "st ")):
             continue
         if "sarandi" in nome or "sarandí" in nome:
+            continue
+        if c == "santos" and "laguna" in nome:
+            continue
+        if c == "al hilal" and "omdurman" in nome:
             continue
         if nome == c or f" {c} " in f" {nome} ":
             return True
     return False
 
 
+GENERIC_STAGES = {
+    "regular season", "league phase", "league stage", "group stage",
+    "semifinals", "semi-finals", "round of 16", "final stage",
+    "first round", "second round", "second preliminary round",
+    "apertura", "clausura", "fall season", "outros", "fase de grupos",
+}
+
+LEAGUE_CODE_MAP = {
+    "eng.1": "English Premier League",
+    "esp.1": "Laliga",
+    "ger.1": "German Bundesliga",
+    "ita.1": "Italian Serie A",
+    "fra.1": "Ligue 1",
+    "fra.w.1": "Ligue 1",
+    "bra.1": "Brasileiro Serie A",
+    "bra.2": "Brasileiro Serie B",
+    "por.1": "Portuguese Primeira Liga",
+    "sau.1": "Saudi Pro League",
+    "usa.1": "Major League Soccer",
+    "uefa.champions": "UEFA Champions League",
+    "uefa.europa": "UEFA Europa League",
+    "uefa.europa.conf": "UEFA Conference League",
+    "conmebol.libertadores": "Copa Libertadores",
+    "conmebol.sudamericana": "Copa Sudamericana",
+    "bra.copa_do_brasil": "Copa do Brasil",
+    "afc.champions": "AFC Champions League Elite",
+    "afc.champions_elite": "AFC Champions League Elite",
+    "esp.w.1": "Spanish Liga F",
+    "eng.w.1": "English Women's Super League",
+}
+
+
+def extrair_codigo_liga(evento):
+    """Extrai o código da liga presente nos links do evento ESPN (/league/<slug>)."""
+    for link in evento.get("links") or []:
+        href = link.get("href") or ""
+        m = re.search(r"/league/([a-zA-Z0-9\._\-]+)", href)
+        if m:
+            return m.group(1).lower()
+    return None
+
+
 def nome_liga_amigavel(evento):
-    slug = (evento.get("season") or {}).get("slug") or "Outros"
+    """Identifica o nome amigável da liga a partir do código do link, altGameNote ou slug da season."""
+    code = extrair_codigo_liga(evento)
+    if code and code in LEAGUE_CODE_MAP:
+        return LEAGUE_CODE_MAP[code]
+
+    comp = (evento.get("competitions") or [{}])[0]
+    alt = comp.get("altGameNote")
+    if alt:
+        alt_liga = alt.split(",")[0].strip()
+        if alt_liga.upper() == "MLS":
+            return "Major League Soccer"
+        if "libertadores" in alt_liga.lower():
+            return "Copa Libertadores"
+        if "sudamericana" in alt_liga.lower():
+            return "Copa Sudamericana"
+        if "champions league" in alt_liga.lower() and "uefa" in alt_liga.lower():
+            return "UEFA Champions League"
+        if "europa league" in alt_liga.lower() and "uefa" in alt_liga.lower():
+            return "UEFA Europa League"
+        if alt_liga.lower() not in GENERIC_STAGES:
+            return alt_liga
+
+    slug = (evento.get("season") or {}).get("slug") or ""
     nome = slug.replace("-", " ").title()
-    return re.sub(r"^\d{4}(\s+\d{2})?\s+", "", nome)
+    nome_limpo = re.sub(r"^\d{4}(\s+\d{2})?\s+", "", nome).strip()
+    if nome_limpo and nome_limpo.lower() not in GENERIC_STAGES:
+        return nome_limpo
+
+    if code:
+        return code.upper()
+    return "Outros"
 
 
 def formatar_resultados(dados, data, filtros=None):
@@ -73,16 +147,13 @@ def formatar_resultados(dados, data, filtros=None):
         nome_casa = casa["team"].get("shortDisplayName") or casa["team"].get("name", "?")
         nome_fora = fora["team"].get("shortDisplayName") or fora["team"].get("name", "?")
 
-        eh_elite = any(alvo in liga_lower for alvo in ligas_permitidas)
+        eh_elite = any(alvo in liga_lower or liga_lower in alvo for alvo in ligas_permitidas)
         nomes = [
             nome_casa.lower(), nome_fora.lower(),
             casa["team"].get("name", "").lower(), fora["team"].get("name", "").lower(),
         ]
         if not eh_elite and not any(eh_time_destaque(n, clubes) for n in nomes):
             continue
-
-        if "regular season" in liga_lower:
-            liga = "Major League Soccer"
 
         score_casa = str(casa.get("score", "") or "").strip()
         score_fora = str(fora.get("score", "") or "").strip()

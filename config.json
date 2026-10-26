@@ -26,17 +26,17 @@
     "ligas_permitidas": [
       "brasileiro serie a", "copa do brasil", "copa libertadores", "copa sudamericana",
       "english premier league", "spanish laliga", "laliga", "german bundesliga",
-      "italian serie a", "french ligue 1", "uefa champions league", "uefa europa league",
+      "italian serie a", "french ligue 1", "ligue 1", "uefa champions league", "uefa europa league",
       "copa america", "uefa european championship", "fifa world cup", "fifa club world cup",
       "conmebol copa america", "world cup qualifying", "eliminatórias"
     ],
     "termos_ligas_ignoradas": [
-      "womens", "ncaa", "2 bundesliga", "ligue 2", "championship"
+      "womens", "ncaa", "2 bundesliga", "ligue 2", "championship", "laliga 2", "segunda"
     ],
     "ligas_excluidas": [
       "russian", "chinese", "scottish", "bolivian", "chile", "allsvenskan", "eliteserien",
       "turkish", "colombian", "mexican", "peruvian", "paraguayan", "uruguayan", "venezuelan",
-      "ecuadorian", "austrian", "greek", "danish", "swiss", "clausura", "apertura"
+      "ecuadorian", "austrian", "greek", "danish", "swiss", "clausura", "apertura", "liga mx", "salvadoran"
     ],
     "clubes_destaque": [
       "flamengo", "palmeiras", "corinthians", "são paulo", "sao paulo", "santos", "grêmio",
