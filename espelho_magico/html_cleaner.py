@@ -13,16 +13,16 @@ _TAGS_REMOVIDAS = ["script", "style", "head", "meta", "link", "noscript", "title
 
 _ALT_DECORATIVO = re.compile(
     r"^(logo|logotipo|image|imagem|img|icon|ícone|icone|spacer|banner|pixel|"
-    r"divider|separador|avatar|foto|photo|picture|header|footer|\s*)$",
+    r"divider|separador|avatar|foto|photo|picture|header|footer|rodapé.*|capa.*|\s*)$",
     re.I,
 )
 
 # Termos comuns em créditos puros de fotógrafo / agência (ruído puro para áudio no NotebookLM)
 _CREDITO_PADRAO = re.compile(
-    r"^(?:foto|cr[eé]dito|imagem|fonte|por|by)\s*[:\-–—]\s*.+$|"
+    r"^(?:foto|cr[eé]dito|imagem|fonte|por|by|source|photo|image|credit|illustration|artwork(?:\s+by)?)\s*[:\-–—]\s*.+$|"
     r"^[^\n|/–—]{1,40}\s*(?:[|/–—]|\bvia\b)\s*(?:reprodu[cç][aã]o|getty(?:\s*images)?|globo|uol|afp|reuters|"
     r"estad[aã]o|folha|x|twitter|unsplash|divulga[cç][aã]o|fortune|bloomberg|ap|shutterstock|"
-    r"vatican|axios|metr[oó]poles|ge|estadao|cnn|bbc|cnbc|divulga|instagram|facebook)\s*$",
+    r"vatican|axios|metr[oó]poles|ge|estadao|cnn|bbc|cnbc|divulga|instagram|facebook|flickr|fanduel|apollo)\s*\.?$",
     re.I,
 )
 
@@ -41,8 +41,11 @@ _PADROES_LINHA = [
     r"<[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}>",
     r"(?i)^Boas-vindas às.*$",
     r"(?i)^.*Leia Online.*$",
+    r"(?i)^\s*Read online\s*$",
+    r"(?i)^(?:Source|Photo|Image|Credit|Illustration|Artwork(?:\s+by)?)\s*:\s*[^\n]{1,80}$",
     r"(?i)^Assine a .* PRO para continuar lendo.*$",
     r"(?i)^Assinar e continuar lendo.*$",
+    r"(?i)^.*Go Premium to keep reading.*$",
     r"(?i)^Atualize suas preferências de e-mail.*$",
     r"(?i)^.*(cancelar inscrição|descadastr|unsubscribe).*$",
     r"(?i)^© \d{4}.*$",
@@ -82,6 +85,30 @@ def _eh_oculto(tag):
     return "display:none" in estilo or "visibility:hidden" in estilo or "max-height:0" in estilo
 
 
+def _compactar_linhas_tabela_dados(soup):
+    """Preserva linhas de tabelas de dados (ex: fechamento de mercado, altas/baixas) na mesma linha.
+
+    Tabelas de layout têm `<table>` aninhadas ou parágrafos longos dentro das células.
+    Já tabelas de dados têm `<tr>` com 2 a 6 células (`<td>`/`<th>`) curtas e sem tabelas filhas.
+    Agrupar essas células por ` | ` evita que uma tabela de cotações vire 200 linhas verticais soltas.
+    """
+    for tr in soup.find_all("tr"):
+        if tr.decomposed or tr.find("table"):
+            continue
+        celulas = tr.find_all(["td", "th"], recursive=False)
+        if not (2 <= len(celulas) <= 6):
+            continue
+        if any(c.find(["h1", "h2", "h3", "h4", "ul", "ol", "blockquote"]) for c in celulas):
+            continue
+        textos = [" ".join(c.get_text(" ", strip=True).split()) for c in celulas]
+        textos_nao_vazios = [t for t in textos if t and t not in ("▲", "▼")]
+        if len(textos_nao_vazios) >= 2 and all(len(t) <= 60 for t in textos_nao_vazios):
+            linha_compacta = " | ".join(t for t in textos if t)
+            novo_p = soup.new_tag("p")
+            novo_p.string = linha_compacta
+            tr.replace_with(novo_p)
+
+
 def limpar_linhas(texto):
     """Aplica as regex de lixo recorrente e normaliza espaços."""
     for padrao in _PADROES_COMPILADOS:
@@ -117,6 +144,9 @@ def html_para_markdown(html):
             img.decompose()
         else:
             img.replace_with(f" [Imagem: {alt}] ")
+
+    # Preserva linhas de tabelas de dados (cotações, índices, altas/baixas) antes de desmontar tabelas de layout
+    _compactar_linhas_tabela_dados(soup)
 
     # E-mails usam tabelas aninhadas para layout; transformá-las em blocos evita
     # tabelas Markdown quebradas e economiza tokens.

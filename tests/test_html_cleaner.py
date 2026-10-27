@@ -48,6 +48,8 @@ def test_remove_creditos_fotograficos():
         <img src="3.jpg" alt="Reprodução / X">
         <img src="4.jpg" alt="Foto: João Silva">
         <img src="5.jpg" alt="Gráfico detalhado mostrando a inflação de 2026">
+        <p>Source: FanDuel.</p>
+        <p>Source: Apollo</p>
     </div>
     """
     md = html_para_markdown(html)
@@ -56,3 +58,22 @@ def test_remove_creditos_fotograficos():
     assert "Manoella Mello" not in md
     assert "Getty Images" not in md
     assert "João Silva" not in md
+    assert "FanDuel" not in md
+    assert "Apollo" not in md
+
+
+def test_compacta_tabela_de_dados_sem_quebrar_layout():
+    html = """
+    <table><tr><td>
+        <h2>Fechamento</h2>
+        <table>
+            <tr><th>Ativo</th><th>Fechamento</th><th>1 dia</th><th>YTD</th></tr>
+            <tr><td>Ibovespa</td><td>205.082,56</td><td>+0,47%</td><td>+27,28%</td></tr>
+            <tr><td>Dólar</td><td>R$ 5,00</td><td>-0,99%</td><td>-7,75%</td></tr>
+        </table>
+    </td></tr></table>
+    """
+    md = html_para_markdown(html)
+    assert "Ativo | Fechamento | 1 dia | YTD" in md
+    assert "Ibovespa | 205.082,56 | +0,47% | +27,28%" in md
+    assert "Dólar | R$ 5,00 | -0,99% | -7,75%" in md

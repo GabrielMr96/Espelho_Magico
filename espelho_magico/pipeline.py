@@ -1,6 +1,7 @@
 """Pipeline: agrupamento de e-mails, numeração de edições, extração, pós-processamento e publicação."""
 import concurrent.futures
 import datetime
+import email.utils
 import re
 import sys
 import threading
@@ -19,6 +20,23 @@ from .llm import Extrator, FalhaExtracao, verificar_completude
 from .log import console, escape, logger
 
 SEPARADOR = "\n\n---\n\n"
+MINIMO_CARACTERES_EDICAO = 250
+
+_MESES_PT = (
+    "", "janeiro", "fevereiro", "março", "abril", "maio", "junho",
+    "julho", "agosto", "setembro", "outubro", "novembro", "dezembro",
+)
+
+
+def formatar_data_email(data_rfc2822):
+    """Converte o cabeçalho Date do Gmail (RFC 2822) para 'DD de mês de AAAA'."""
+    if not data_rfc2822:
+        return ""
+    try:
+        dt = email.utils.parsedate_to_datetime(data_rfc2822)
+        return f"{dt.day} de {_MESES_PT[dt.month]} de {dt.year}"
+    except Exception:
+        return ""
 
 
 @dataclass
@@ -49,11 +67,11 @@ def carregar_prompt(nome):
 def agrupar_emails(emails, mapeamento):
     """Agrupa por prefixo conhecido (no remetente ou no início do assunto); os demais ficam um por grupo."""
     grupos = {}
-    for email in emails:
-        assunto = email["assunto"].lower()
-        remetente = email.get("remetente", "").lower()
+    for email_item in emails:
+        assunto = email_item["assunto"].lower()
+        remetente = email_item.get("remetente", "").lower()
         chave = next((p for p in mapeamento if p in remetente or assunto.startswith(p)), None)
-        grupos.setdefault(chave or assunto, []).append(email)
+        grupos.setdefault(chave or assunto, []).append(email_item)
     return grupos
 
 
@@ -95,6 +113,10 @@ _RE_CREDITO_RESIDUAL = re.compile(
     r"^\[(?:descrição da imagem|imagem):\s*[^\n|/–—]{1,40}\s*(?:[|/–—]|\bvia\b)\s*"
     r"(?:reprodu[cç][aã]o|getty(?:\s*images)?|globo|uol|afp|reuters|estad[aã]o|folha|x|twitter|"
     r"unsplash|divulga[cç][aã]o|fortune|bloomberg|ap|shutterstock|vatican|axios|metr[oó]poles|ge)\s*\]\s*$",
+    re.I,
+)
+_RE_LINHA_CREDITO_SOLTO = re.compile(
+    r"^(?:source|photo|image|credit|illustration|artwork(?:\s+by)?|foto|cr[eé]dito|imagem)\s*:\s*[^\n]{1,80}$",
     re.I,
 )
 _RE_APROFUNDE = re.compile(r"\s*\(?(?:aprofund[ea]|leia mais|saiba mais)\)?", re.I)
@@ -163,8 +185,8 @@ def sanitizar_markdown_final(texto):
     for linha in linhas:
         l_strip = linha.strip()
 
-        # Remove imagens que sejam apenas créditos de fotógrafo/agência residuais
-        if _RE_CREDITO_RESIDUAL.match(l_strip):
+        # Remove imagens ou linhas que sejam apenas créditos de fotógrafo/agência residuais
+        if _RE_CREDITO_RESIDUAL.match(l_strip) or _RE_LINHA_CREDITO_SOLTO.match(l_strip):
             continue
 
         # Cabeçalho H1 (#)
@@ -187,6 +209,18 @@ def sanitizar_markdown_final(texto):
     limpo = "\n".join(linhas_processadas)
     limpo = deduplicar_secoes(limpo)
     return re.sub(r"\n{3,}", "\n\n", limpo).strip()
+
+
+def eh_extracao_vazia_ou_invalida(texto):
+    """Detecta quando o e-mail era puramente promocional/administrativo e não gerou pauta real."""
+    if not texto:
+        return True
+    limpo = texto.strip()
+    if "[SEM_CONTEUDO_EDITORIAL]" in limpo:
+        return True
+    # Remove o título H1 da data para medir se sobrou corpo editorial real
+    sem_h1 = re.sub(r"^#\s+.*$", "", limpo, flags=re.M).strip()
+    return len(sem_h1) < MINIMO_CARACTERES_EDICAO
 
 
 # --- Pipeline -------------------------------------------------------------------
@@ -250,16 +284,26 @@ class Pipeline:
 
     # -- extração --
     @staticmethod
-    def _preparar(email):
-        """Conteúdo a enviar para a IA: HTML pré-limpo em Markdown, ou texto puro só com regex."""
-        bruto = email["conteudo_html"]
-        if email.get("eh_html", True):
+    def _preparar(email_item):
+        """Conteúdo a enviar para a IA: metadados de data/assunto + HTML pré-limpo em Markdown."""
+        bruto = email_item["conteudo_html"]
+        if email_item.get("eh_html", True):
             conteudo = preparar_conteudo(bruto, config.HTML_PRECLEAN)
         else:
             conteudo = limpar_linhas(bruto)
         if conteudo is not bruto and len(bruto):
             reducao = 100 - (len(conteudo) * 100 // len(bruto))
             logger.info(f"[dim]  ✂ Pré-limpeza: {len(bruto):,} → {len(conteudo):,} caracteres (-{reducao}%)[/dim]")
+
+        data_pt = formatar_data_email(email_item.get("data", ""))
+        assunto = email_item.get("assunto", "")
+        meta = []
+        if data_pt:
+            meta.append(f"Data do e-mail: {data_pt}")
+        if assunto:
+            meta.append(f"Assunto: {assunto}")
+        if meta:
+            return f"[METADADOS DO E-MAIL — {' | '.join(meta)}]\n\n{conteudo}"
         return conteudo
 
     def _extrair(self, conteudo, prompt, rotulo):
@@ -306,11 +350,11 @@ class Pipeline:
                 textos.append(texto)
                 emails_ok.extend(cfg.emails)
         else:
-            for i, email in enumerate(cfg.emails):
-                texto = self._extrair(self._preparar(email), self.prompt_base, email["assunto"])
+            for i, email_item in enumerate(cfg.emails):
+                texto = self._extrair(self._preparar(email_item), self.prompt_base, email_item["assunto"])
                 if texto:
                     textos.append(texto)
-                    emails_ok.append(email)
+                    emails_ok.append(email_item)
                 if i < len(cfg.emails) - 1:
                     time.sleep(2)
 
@@ -318,9 +362,21 @@ class Pipeline:
             logger.error(f"[bold red]✖ Falha ao gerar texto para {escape(cfg.nome_final)}[/bold red]")
             return f"❌ Erro ao gerar {cfg.nome_final}"
 
+        corpo_editorial = sanitizar_markdown_final(SEPARADOR.join(textos))
+        if eh_extracao_vazia_ou_invalida(corpo_editorial):
+            logger.warning(
+                f"[bold yellow]⚠ E-mail(s) de '{escape(cfg.titulo_base)}' sem conteúdo editorial válido "
+                f"({len(corpo_editorial)} chars). Edição {escape(cfg.nome_final)} descartada para não gerar arquivo vazio.[/bold yellow]"
+            )
+            if not self.opcoes.dry_run:
+                for email_item in emails_ok:
+                    marcar_como_lido(self.gmail, email_item["id"])
+            return f"⏭️ {cfg.nome_final} ignorado (e-mail promocional/administrativo sem notícias)"
+
         if resultados_futebol:
-            textos[0] = resultados_futebol + SEPARADOR + textos[0]
-        final = sanitizar_markdown_final(SEPARADOR.join(textos))
+            final = sanitizar_markdown_final(resultados_futebol + SEPARADOR + corpo_editorial)
+        else:
+            final = corpo_editorial
 
         self.pasta_saida.mkdir(parents=True, exist_ok=True)
         caminho = self.pasta_saida / cfg.nome_final
@@ -339,8 +395,8 @@ class Pipeline:
 
         if self.drive:
             upload_para_drive(self.drive, caminho, cfg.nome_final)
-        for email in emails_ok:
-            marcar_como_lido(self.gmail, email["id"])
+        for email_item in emails_ok:
+            marcar_como_lido(self.gmail, email_item["id"])
 
         parcial = len(emails_ok) < len(cfg.emails)
         sufixo = f" ({len(emails_ok)}/{len(cfg.emails)} e-mails; os demais continuam não lidos)" if parcial else ""

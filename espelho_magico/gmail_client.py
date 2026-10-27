@@ -204,6 +204,7 @@ def buscar_emails(gmail_service):
                 "id": msg_id,
                 "assunto": _header(headers, "Subject", "Newsletter_Sem_Assunto"),
                 "remetente": _header(headers, "From", "Desconhecido"),
+                "data": _header(headers, "Date", ""),
                 "conteudo_html": conteudo,
                 "eh_html": html is not None,
             })

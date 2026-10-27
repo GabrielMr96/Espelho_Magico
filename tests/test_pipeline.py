@@ -1,7 +1,10 @@
 from espelho_magico.drive_client import montar_query
 from espelho_magico.pipeline import (
+    Pipeline,
     agrupar_emails,
     deduplicar_secoes,
+    eh_extracao_vazia_ou_invalida,
+    formatar_data_email,
     maior_edicao_existente,
     nome_fallback,
     sanitizar_markdown_final,
@@ -88,6 +91,7 @@ def test_sanitizar_markdown_final():
         "# 12 de Outubro de 2026",
         "",
         "## A IA vai acabar com empregos?",
+        "Source: FanDuel.",
         "Texto da matéria. (Aprofunde)",
         "",
         "[Descrição da Imagem: Fortune | Getty Images]",
@@ -108,10 +112,32 @@ def test_sanitizar_markdown_final():
     # Pontuação final de cabeçalho removida
     assert "## A IA vai acabar com empregos\n" in out
     assert "## Outra Notícia Importante\n" in out
-    # (Aprofunde) e links de twitter removidos
+    # (Aprofunde), Source: FanDuel e links de twitter removidos
     assert "(Aprofunde)" not in out
+    assert "Source: FanDuel" not in out
     assert "pic.twitter.com" not in out
     assert "https://t.co" not in out
     # Imagem de crédito descartada, imagem com descrição informativa preservada
     assert "Fortune | Getty Images" not in out
     assert "[Descrição da Imagem: Gráfico detalhado de vendas de veículos elétricos]" in out
+
+
+def test_formatar_data_e_preparar_metadados():
+    assert formatar_data_email("Mon, 26 Oct 2026 10:30:10 +0000") == "26 de outubro de 2026"
+    email_obj = {
+        "assunto": "Brace for impact",
+        "data": "Mon, 26 Oct 2026 10:30:10 +0000",
+        "conteudo_html": "Texto simples da edição",
+        "eh_html": False,
+    }
+    prep = Pipeline._preparar(email_obj)
+    assert "[METADADOS DO E-MAIL — Data do e-mail: 26 de outubro de 2026 | Assunto: Brace for impact]" in prep
+    assert "Texto simples da edição" in prep
+
+
+def test_eh_extracao_vazia_ou_invalida():
+    assert eh_extracao_vazia_ou_invalida("")
+    assert eh_extracao_vazia_ou_invalida("[SEM_CONTEUDO_EDITORIAL]")
+    assert eh_extracao_vazia_ou_invalida("# 26 de outubro de 2026\n\nTexto curto demais.")
+    valido = "# 26 de outubro de 2026\n\n## Notícia Completa\n\n" + ("Parágrafo com conteúdo real da notícia. " * 10)
+    assert not eh_extracao_vazia_ou_invalida(valido)
