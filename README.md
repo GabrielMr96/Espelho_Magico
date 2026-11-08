@@ -43,7 +43,7 @@ Automação que lê newsletters do Gmail (marcador `Espelho_Magico`), arranca o 
 
 | Onde | O quê |
 | --- | --- |
-| `config.json` | Mapeamento de prefixos → títulos, ordem de modelos Gemini (`gemini-3.8-flash`, `gemini-3.7-flash`, etc.), filtros de ligas e clubes |
+| `config.json` | Mapeamento de prefixos → títulos, diretrizes específicas por fonte (`dicas_por_prefixo`), idioma (`prefixos_ingles`), ordem de modelos Gemini e filtros de ligas/clubes |
 | `.env` | Chaves de API, `IA_PADRAO`, retentativas (`MAX_RODADAS`, `BACKOFF_*`), workers paralelos (`MAX_WORKERS`), IDs de pasta do Drive, label do Gmail |
 | `espelho_magico/prompts/` | Diretrizes de extração literal, tratamento de imagens para áudio e modo unificação |
 

@@ -50,8 +50,16 @@ _PADROES_LINHA = [
     r"(?i)^.*(cancelar inscrição|descadastr|unsubscribe).*$",
     r"(?i)^© \d{4}.*$",
     r"(?i)^Reservar minha vaga.*$",
+    r"(?i)^\s*(?:view this email in your browser|ver este e-mail no navegador|listen to this episode)\s*$",
+    r"(?i)^\s*(?:tempo de leitura\s*:|reading time\s*:|today['’]s reading time is\b).*$",
 ]
 _PADROES_COMPILADOS = [re.compile(p, re.MULTILINE) for p in _PADROES_LINHA]
+
+_CABECALHO_RELACIONADOS = re.compile(
+    r"^(?:(?:leia|veja|confira)\s+(?:mais\s+sobre\s+.+|tamb[eé]m)|"
+    r"(?:mat[eé]rias|not[ií]cias|posts|artigos)\s+relacionad[oa]s)\s*:?$",
+    re.I,
+)
 
 
 def _eh_alt_informativo(alt):
@@ -83,6 +91,25 @@ def _eh_pixel(img):
 def _eh_oculto(tag):
     estilo = str(tag.get("style", "")).replace(" ", "").lower()
     return "display:none" in estilo or "visibility:hidden" in estilo or "max-height:0" in estilo
+
+
+def _remover_blocos_relacionados(soup):
+    """Remove widgets de portais do tipo 'Leia mais sobre X' / 'Veja também' seguidos de lista de links."""
+    for tag in list(soup.find_all(["h2", "h3", "h4", "h5", "p", "strong", "b"])):
+        if tag.decomposed:
+            continue
+        texto = " ".join(tag.get_text(" ", strip=True).split())
+        if not texto or len(texto) > 90 or not _CABECALHO_RELACIONADOS.match(texto):
+            continue
+        alvo = tag
+        if tag.name in ("strong", "b") and tag.parent and tag.parent.name in ("p", "div", "h3", "h4"):
+            texto_pai = " ".join(tag.parent.get_text(" ", strip=True).split())
+            if texto_pai == texto:
+                alvo = tag.parent
+        proximo = alvo.find_next_sibling()
+        if proximo and proximo.name in ("ul", "ol"):
+            proximo.decompose()
+        alvo.decompose()
 
 
 def _compactar_linhas_tabela_dados(soup):
@@ -144,6 +171,9 @@ def html_para_markdown(html):
             img.decompose()
         else:
             img.replace_with(f" [Imagem: {alt}] ")
+
+    # Remove widgets internos de "Leia mais sobre X / Veja também" antes de limpar tags <a>
+    _remover_blocos_relacionados(soup)
 
     # Preserva linhas de tabelas de dados (cotações, índices, altas/baixas) antes de desmontar tabelas de layout
     _compactar_linhas_tabela_dados(soup)

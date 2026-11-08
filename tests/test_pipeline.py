@@ -1,10 +1,12 @@
 from espelho_magico.drive_client import montar_query
 from espelho_magico.pipeline import (
+    Opcoes,
     Pipeline,
     agrupar_emails,
     deduplicar_secoes,
     eh_extracao_vazia_ou_invalida,
     formatar_data_email,
+    inserir_apos_h1,
     maior_edicao_existente,
     nome_fallback,
     sanitizar_markdown_final,
@@ -141,3 +143,62 @@ def test_eh_extracao_vazia_ou_invalida():
     assert eh_extracao_vazia_ou_invalida("# 26 de outubro de 2026\n\nTexto curto demais.")
     valido = "# 26 de outubro de 2026\n\n## Notícia Completa\n\n" + ("Parágrafo com conteúdo real da notícia. " * 10)
     assert not eh_extracao_vazia_ou_invalida(valido)
+
+
+def test_dedup_nao_funde_subtitulos_genericos_entre_materias_diferentes():
+    texto = "\n".join([
+        "# 6 de novembro de 2026",
+        "## Hackers atacam freezers na França",
+        "### Resumo",
+        "- Ataque atingiu bancos de sangue.",
+        "### Detalhes do caso",
+        "Alarmes soaram a tempo.",
+        "## Microsoft Paint tem falha grave",
+        "### Resumo",
+        "- Falha CVE permite código remoto no Paint.",
+        "### Correção liberada",
+        "Atualize pela Microsoft Store.",
+    ])
+    out = deduplicar_secoes(texto)
+    idx_hackers = out.index("## Hackers atacam freezers na França")
+    idx_paint = out.index("## Microsoft Paint tem falha grave")
+    idx_cve = out.index("Falha CVE permite código remoto no Paint.")
+    assert idx_hackers < idx_paint < idx_cve
+    assert out.count("### Resumo") == 2
+
+
+def test_inserir_apos_h1_mantem_data_na_primeira_linha():
+    corpo = "# 6 de novembro de 2026\n\n## O gol histórico\n\nTexto da matéria."
+    futebol_md = "## RESULTADOS RECENTES (05/11/2026)\n\n### Brasileiro Serie A\n- Palmeiras 6 x 1 Remo"
+    combinado = sanitizar_markdown_final(inserir_apos_h1(corpo, futebol_md))
+    assert combinado.startswith("# 6 de novembro de 2026\n\n## RESULTADOS RECENTES (05/11/2026)")
+    assert combinado.index("## RESULTADOS RECENTES") < combinado.index("## O gol histórico")
+
+
+def test_sanitizar_remove_cercas_markdown_externas():
+    bruto = "```markdown\n# 7 de novembro de 2026\n\n## Título limpo?\n\nCorpo da notícia.\n```"
+    limpo = sanitizar_markdown_final(bruto)
+    assert limpo.startswith("# 7 de novembro de 2026")
+    assert "```" not in limpo
+    assert "## Título limpo\n" in limpo
+
+
+def test_formatar_data_ingles_e_montar_prompt_por_prefixo():
+    assert formatar_data_email("Sat, 07 Nov 2026 12:00:00 +0000", idioma="en") == "November 7, 2026"
+    email_en = {
+        "assunto": "This Startup Wants Rockets",
+        "data": "Sat, 07 Nov 2026 12:00:00 +0000",
+        "conteudo_html": "English body content",
+        "eh_html": False,
+    }
+    prep = Pipeline._preparar(email_en, idioma="en")
+    assert "<metadados>" in prep and "<documento_entrada>" in prep
+    assert "Email Date: November 7, 2026" in prep
+    assert "Output Language: 100% English" in prep
+
+    pipe = Pipeline(Opcoes(dry_run=True), extrator=None, drive_service=None, gmail_service=None)
+    prompt_peak = pipe._montar_prompt("peak", unificar=True)
+    assert "<diretrizes_especificas_desta_fonte>" in prompt_peak
+    assert "100% EM INGLÊS" in prompt_peak
+    assert "<modo_unificacao>" in prompt_peak
+

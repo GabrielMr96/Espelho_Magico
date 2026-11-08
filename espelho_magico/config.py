@@ -48,6 +48,8 @@ with open(CONFIG_JSON_PATH, "r", encoding="utf-8") as _f:
 
 MAPEAMENTO_PREFIXOS = _CONFIG["mapeamento_prefixos"]
 PREFIXO_FUTEBOL = _CONFIG.get("prefixo_futebol", "tns sports")
+PREFIXOS_INGLES = {p.lower() for p in _CONFIG.get("prefixos_ingles", ["peak"])}
+DICAS_POR_PREFIXO = {k.lower(): v for k, v in _CONFIG.get("dicas_por_prefixo", {}).items()}
 FUTEBOL = _CONFIG["futebol"]
 
 # --- Google ------------------------------------------------------------------

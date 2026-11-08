@@ -111,6 +111,10 @@ class RespostaHTTP:
     def json(self):
         return self._dados
 
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
 
 def _post_fake(respostas):
     chamadas = []
@@ -190,3 +194,22 @@ def test_extrator_alt_como_principal_nao_chama_gemini():
     alt = AltFake("ok")
     assert Extrator(gemini=g, alternativo=alt, ia_padrao="alt").extrair("c", "p") == "ok"
     assert c.chamadas == []
+
+
+def test_perplexity_desativa_busca_externa(monkeypatch):
+    import requests
+    from espelho_magico import config
+    from espelho_magico.llm import extrair_com_perplexity
+
+    capturado = {}
+
+    def post_fake(url, json, headers, timeout):
+        capturado["json"] = json
+        return RespostaHTTP(200, {"choices": [{"message": {"content": "# 7 de novembro de 2026\n\nTexto"}}]})
+
+    monkeypatch.setattr(config, "PERPLEXITY_API_KEY", "pplx-fake")
+    monkeypatch.setattr(requests, "post", post_fake)
+    out = extrair_com_perplexity("conteudo", "prompt")
+    assert "7 de novembro" in out
+    assert capturado["json"]["disable_search"] is True
+

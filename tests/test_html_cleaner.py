@@ -77,3 +77,32 @@ def test_compacta_tabela_de_dados_sem_quebrar_layout():
     assert "Ativo | Fechamento | 1 dia | YTD" in md
     assert "Ibovespa | 205.082,56 | +0,47% | +27,28%" in md
     assert "Dólar | R$ 5,00 | -0,99% | -7,75%" in md
+
+
+def test_remove_blocos_relacionados_de_portais():
+    html = """
+    <div>
+        <h2>Design da Navi em Ocarina of Time</h2>
+        <p>Texto principal da notícia sobre a fada Navi.</p>
+        <h3>Leia mais sobre The Legend of Zelda</h3>
+        <ul>
+            <li><a href="https://ovicio.com.br/1">Dark Link surge no remake</a></li>
+            <li><a href="https://ovicio.com.br/2">Assista ao trailer do remake</a></li>
+        </ul>
+        <p><strong>Veja também:</strong></p>
+        <ul>
+            <li><a href="https://tecnoblog.net/1">Outra notícia antiga</a></li>
+        </ul>
+        <h2>Segunda Notícia</h2>
+        <ul>
+            <li>Item real da matéria mantido</li>
+        </ul>
+    </div>
+    """
+    md = html_para_markdown(html)
+    assert "Texto principal da notícia sobre a fada Navi." in md
+    assert "Item real da matéria mantido" in md
+    assert "The Legend of Zelda" not in md
+    assert "Dark Link surge no remake" not in md
+    assert "Outra notícia antiga" not in md
+

@@ -1,16 +1,17 @@
-ATENÇÃO - MODO UNIFICAÇÃO FIEL (PROIBIDO RESUMIR OU OMITIR NOTÍCIAS):
-Foram fornecidos MÚLTIPLOS e-mails/edições abaixo (separados por "--- INÍCIO DA EDIÇÃO ---").
-Siga estas regras estritas ao unificar:
+<modo_unificacao>
+ATENÇÃO — MODO UNIFICAÇÃO FIEL (PROIBIDO RESUMIR OU OMITIR NOTÍCIAS):
+Foram fornecidos MÚLTIPLOS e-mails/edições em `<documento_entrada>`, separados por `--- INÍCIO DA EDIÇÃO N ---`.
+Aplique todas as regras anteriores em conjunto com estas diretrizes estritas:
 
 1. NOTÍCIAS DISTINTAS = CÓPIA 100% LITERAL E INTEGRAL:
-   - A maioria dos e-mails agrupados traz notícias independentes sobre assuntos diferentes.
-   - Para TODA notícia que aparece em apenas um dos e-mails, você DEVE copiar TODOS os seus parágrafos na íntegra, palavra por palavra (ipsis litteris).
-   - É TERMINANTEMENTE PROIBIDO resumir, encurtar ou condensar matérias de 4–6 parágrafos em 1–2 parágrafos só porque o documento unificado ficou grande!
-   - NENHUMA notícia de nenhum dos e-mails pode ficar de fora. Confira cada bloco "--- INÍCIO DA EDIÇÃO ---" e extraia 100% das matérias de todos eles.
+   - Percorra TODOS os blocos `--- INÍCIO DA EDIÇÃO N ---` do primeiro ao último. Nenhuma notícia válida de nenhum e-mail pode ficar de fora.
+   - Para toda matéria sobre assunto distinto, copie TODOS os seus parágrafos na íntegra, palavra por palavra (ipsis litteris).
+   - É TERMINANTEMENTE PROIBIDO resumir, condensar ou encurtar matérias de 4–8 parágrafos em 1–2 parágrafos só porque o documento unificado ficou extenso.
 
-2. QUANDO DOIS TRECHOS OU DOIS E-MAILS FALAREM DO MESMO FATO/EVENTO:
-   - Se uma mesma notícia estiver dividida entre dois e-mails (ex: um plantão/breaking news seguido da cobertura completa no dia seguinte, ou duas matérias sobre o mesmo filme/jogo), junte-as sob um único título `##`.
-   - Ao juntar, MANTENHA TODOS os parágrafos, citações e detalhes exclusivos de cada versão na íntegra, eliminando apenas frases repetidas que digam exatamente a mesma coisa. Nunca resuma a fusão!
+2. FUSÃO INTELIGENTE DE COBERTURAS SOBRE O MESMO FATO E LIMPEZA DE RODAPÉ REPETIDO:
+   - MESMO EVENTO EM DOIS E-MAILS: se duas edições cobrirem o mesmo acontecimento (ex.: um plantão seguido de atualização ou duas coberturas da mesma notícia), unifique-as sob um único título `##`, preservando 100% dos parágrafos, citações e dados exclusivos de cada versão e eliminando apenas frases repetidas que digam exatamente a mesma coisa. Nunca resuma a fusão!
+   - MÚLTIPLAS NOTAS DE PORTAIS SOBRE O MESMO FILME, JOGO OU SÉRIE: se o lote trouxer matérias diferentes sobre a mesma obra (ex.: declarações ou novidades distintas sobre o mesmo jogo ou filme), mantenha integralmente todo o conteúdo inédito e declarações de cada matéria, mas REMOVA nas matérias subsequentes parágrafos finais de ficha técnica/SEO que sejam mera repetição de informações já dadas em matéria anterior deste mesmo arquivo (como data de estreia, plataformas disponíveis, nota idêntica no Metacritic ou lista completa de elenco repetida).
 
-3. CABEÇALHO DE DATA ÚNICO:
-   - Use apenas UM título de nível 1 (`# DD de mês de AAAA`) na primeira linha do documento todo (usando a data mais recente nos metadados dos e-mails).
+3. CABEÇALHO ÚNICO DE DATA E IDIOMA CONSISTENTE:
+   - Gere rigorosamente UM ÚNICO título de nível 1 (`#`) na primeira linha de todo o documento unificado, usando a data mais recente presente em `<metadados>` e respeitando o idioma da newsletter (`# DD de mês de AAAA` em português; `# Month DD, YYYY` em inglês).
+     </modo_unificacao>

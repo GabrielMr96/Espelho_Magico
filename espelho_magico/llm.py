@@ -211,6 +211,7 @@ def extrair_com_perplexity(conteudo, prompt):
                     {"role": "user", "content": f"Filtre e extraia os dados deste conteúdo:\n\n{conteudo}"},
                 ],
                 "temperature": 0.2,
+                "disable_search": True,
             },
             headers={"Authorization": f"Bearer {config.PERPLEXITY_API_KEY}", "Content-Type": "application/json"},
             timeout=120,

@@ -26,14 +26,20 @@ _MESES_PT = (
     "", "janeiro", "fevereiro", "março", "abril", "maio", "junho",
     "julho", "agosto", "setembro", "outubro", "novembro", "dezembro",
 )
+_MESES_EN = (
+    "", "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+)
 
 
-def formatar_data_email(data_rfc2822):
-    """Converte o cabeçalho Date do Gmail (RFC 2822) para 'DD de mês de AAAA'."""
+def formatar_data_email(data_rfc2822, idioma="pt"):
+    """Converte o cabeçalho Date do Gmail (RFC 2822) para 'DD de mês de AAAA' (pt) ou 'Month DD, YYYY' (en)."""
     if not data_rfc2822:
         return ""
     try:
         dt = email.utils.parsedate_to_datetime(data_rfc2822)
+        if idioma == "en":
+            return f"{_MESES_EN[dt.month]} {dt.day}, {dt.year}"
         return f"{dt.day} de {_MESES_PT[dt.month]} de {dt.year}"
     except Exception:
         return ""
@@ -122,21 +128,29 @@ _RE_LINHA_CREDITO_SOLTO = re.compile(
 _RE_APROFUNDE = re.compile(r"\s*\(?(?:aprofund[ea]|leia mais|saiba mais)\)?", re.I)
 _RE_TWITTER_LIXO = re.compile(r"(?:https?://t\.co/\S+|pic\.twitter\.com/\S+)")
 _RE_TITULO_PONTUADO = re.compile(r"^(#{1,6}\s+.*?)[.?!:]\s*$")
+_RE_CERCA_EXTERNA = re.compile(r"^\s*```(?:markdown|md)?\s*\n(.*?)\n\s*```\s*$", re.S | re.I)
 
 
 def deduplicar_secoes(texto):
     """Remove seções com título repetido sem perder conteúdo.
 
+    - Títulos de nível 2 (##) são deduplicados no escopo global do documento.
+    - Subtítulos de nível 3+ (###) são deduplicados apenas dentro do mesmo ## pai,
+      impedindo que subseções genéricas (ex.: '### Resumo') de matérias diferentes se fundam.
     - Mesmo título e mesmo corpo: a seção repetida é descartada.
     - Mesmo título e corpo diferente: o corpo é anexado à primeira ocorrência
       (antes, só o título era apagado e o corpo ficava "colado" na seção anterior).
-    Um título "RESULTADOS RECENTES" reinicia o escopo (os nomes de ligas se repetem por data).
     """
-    blocos = [{"titulo": None, "linhas": []}]
+    blocos = [{"nivel": 0, "titulo": None, "escopo_h2": None, "linhas": []}]
+    escopo_h2 = None
     for linha in texto.split("\n"):
         m = _HEADING.match(linha)
         if m:
-            blocos.append({"titulo": m.group(2).strip().lower(), "linhas": [linha]})
+            nivel = len(m.group(1))
+            titulo = m.group(2).strip().lower()
+            if nivel == 2:
+                escopo_h2 = titulo
+            blocos.append({"nivel": nivel, "titulo": titulo, "escopo_h2": escopo_h2, "linhas": [linha]})
         else:
             blocos[-1]["linhas"].append(linha)
 
@@ -147,11 +161,11 @@ def deduplicar_secoes(texto):
         if titulo is None:
             saida.append(bloco)
             continue
-        if titulo.startswith("resultados recentes"):
-            vistos.clear()
-        primeiro = vistos.get(titulo)
+        nivel = bloco["nivel"]
+        chave = ("h2", bloco["escopo_h2"]) if nivel == 2 else ("sub", bloco["escopo_h2"], nivel, titulo)
+        primeiro = vistos.get(chave)
         if primeiro is None:
-            vistos[titulo] = bloco
+            vistos[chave] = bloco
             saida.append(bloco)
             continue
 
@@ -161,20 +175,40 @@ def deduplicar_secoes(texto):
             conteudo_primeiro, rabo_primeiro = _separar_rabo(primeiro["linhas"])
             primeiro["linhas"] = conteudo_primeiro + [""] + miolo + rabo_primeiro
         if rabo:
-            saida.append({"titulo": None, "linhas": rabo})
+            saida.append({"nivel": 0, "titulo": None, "escopo_h2": None, "linhas": rabo})
 
     linhas = [linha for b in saida for linha in b["linhas"]]
     return re.sub(r"\n{3,}", "\n\n", "\n".join(linhas)).strip()
 
 
+def inserir_apos_h1(corpo, bloco_extra):
+    """Insere um bloco extra (ex.: placares de futebol) logo após o cabeçalho # da linha 1."""
+    if not bloco_extra or not bloco_extra.strip():
+        return corpo
+    corpo_limpo = corpo.strip()
+    extra_limpo = bloco_extra.strip()
+    m = re.match(r"^(#\s+[^\n]+)\n*(.*)$", corpo_limpo, flags=re.S)
+    if m:
+        h1, resto = m.group(1).strip(), m.group(2).strip()
+        if resto:
+            return f"{h1}\n\n{extra_limpo}{SEPARADOR}{resto}"
+        return f"{h1}\n\n{extra_limpo}"
+    return f"{extra_limpo}{SEPARADOR}{corpo_limpo}"
+
+
 def sanitizar_markdown_final(texto):
     """Higieniza o Markdown final antes de salvar e subir para o Drive:
+    - Remove eventuais cercas ```markdown externas devolvidas pela IA.
     - Garante no máximo 1 título de nível 1 (#) no documento (rebaixa H1 extras para H2).
     - Remove pontuações indesejadas no final de cabeçalhos (regras para o NotebookLM).
     - Remove descrições de imagem que sejam apenas créditos de agência/fotógrafo.
     - Remove CTAs residuais como (Aprofunde) e links quebrados de redes sociais.
     - Executa a deduplicação de seções repetidas.
     """
+    m_cerca = _RE_CERCA_EXTERNA.match(texto)
+    if m_cerca:
+        texto = m_cerca.group(1)
+
     texto = _RE_APROFUNDE.sub("", texto)
     texto = _RE_TWITTER_LIXO.sub("", texto)
 
@@ -283,8 +317,17 @@ class Pipeline:
         return configs
 
     # -- extração --
+    def _montar_prompt(self, chave, unificar=False):
+        partes = [self.prompt_base]
+        dica = config.DICAS_POR_PREFIXO.get((chave or "").lower())
+        if dica:
+            partes.append(f"<diretrizes_especificas_desta_fonte>\n{dica}\n</diretrizes_especificas_desta_fonte>")
+        if unificar:
+            partes.append(self.prompt_unificacao)
+        return "\n\n".join(partes)
+
     @staticmethod
-    def _preparar(email_item):
+    def _preparar(email_item, idioma="pt", envolver_documento=True):
         """Conteúdo a enviar para a IA: metadados de data/assunto + HTML pré-limpo em Markdown."""
         bruto = email_item["conteudo_html"]
         if email_item.get("eh_html", True):
@@ -295,16 +338,26 @@ class Pipeline:
             reducao = 100 - (len(conteudo) * 100 // len(bruto))
             logger.info(f"[dim]  ✂ Pré-limpeza: {len(bruto):,} → {len(conteudo):,} caracteres (-{reducao}%)[/dim]")
 
-        data_pt = formatar_data_email(email_item.get("data", ""))
+        data_fmt = formatar_data_email(email_item.get("data", ""), idioma=idioma)
         assunto = email_item.get("assunto", "")
         meta = []
-        if data_pt:
-            meta.append(f"Data do e-mail: {data_pt}")
-        if assunto:
-            meta.append(f"Assunto: {assunto}")
+        if idioma == "en":
+            if data_fmt:
+                meta.append(f"Email Date: {data_fmt}")
+            if assunto:
+                meta.append(f"Subject: {assunto}")
+            meta.append("Output Language: 100% English")
+        else:
+            if data_fmt:
+                meta.append(f"Data do e-mail: {data_fmt}")
+            if assunto:
+                meta.append(f"Assunto: {assunto}")
+
+        corpo_final = f"<documento_entrada>\n{conteudo}\n</documento_entrada>" if envolver_documento else conteudo
         if meta:
-            return f"[METADADOS DO E-MAIL — {' | '.join(meta)}]\n\n{conteudo}"
-        return conteudo
+            bloco_meta = f"<metadados>\n[METADADOS DO E-MAIL — {' | '.join(meta)}]\n</metadados>"
+            return f"{bloco_meta}\n\n{corpo_final}"
+        return corpo_final
 
     def _extrair(self, conteudo, prompt, rotulo):
         try:
@@ -317,7 +370,12 @@ class Pipeline:
                 f"[yellow]⚠ Extração de '{escape(rotulo)}' parece incompleta "
                 f"({len(texto):,} caracteres gerados para {len(conteudo):,} de entrada). Vale revisar.[/yellow]"
             )
-        return texto.strip()
+        texto_limpo = texto.strip()
+        if "[SEM_CONTEUDO_EDITORIAL]" not in texto_limpo and not re.search(r"^#\s+\S+", texto_limpo, flags=re.M):
+            logger.warning(
+                f"[yellow]⚠ Extração de '{escape(rotulo)}' veio sem cabeçalho '# Data' de nível 1.[/yellow]"
+            )
+        return texto_limpo
 
     def processar_grupo(self, cfg):
         with self._lock_pendentes:
@@ -338,20 +396,24 @@ class Pipeline:
         if cfg.chave == config.PREFIXO_FUTEBOL:
             resultados_futebol, data_futebol = futebol.coletar_resultados()
 
+        idioma = "en" if (cfg.chave or "").lower() in config.PREFIXOS_INGLES else "pt"
         textos, emails_ok = [], []
         if cfg.unificar:
-            combinado = "".join(
-                f"\n\n--- INÍCIO DA EDIÇÃO {i + 1} ---\n\n{self._preparar(e)}"
+            partes_edicoes = "".join(
+                f"\n\n--- INÍCIO DA EDIÇÃO {i + 1} ---\n\n{self._preparar(e, idioma=idioma, envolver_documento=False)}"
                 for i, e in enumerate(cfg.emails)
-            )
+            ).strip()
+            combinado = f"<documento_entrada>\n{partes_edicoes}\n</documento_entrada>"
             logger.info(f"[cyan]➜ Enviando {len(cfg.emails)} e-mails agrupados para extração unificada ({escape(cfg.titulo_base)})...[/cyan]")
-            texto = self._extrair(combinado, f"{self.prompt_base}\n\n{self.prompt_unificacao}", cfg.titulo_base)
+            prompt_grupo = self._montar_prompt(cfg.chave, unificar=True)
+            texto = self._extrair(combinado, prompt_grupo, cfg.titulo_base)
             if texto:
                 textos.append(texto)
                 emails_ok.extend(cfg.emails)
         else:
+            prompt_grupo = self._montar_prompt(cfg.chave, unificar=False)
             for i, email_item in enumerate(cfg.emails):
-                texto = self._extrair(self._preparar(email_item), self.prompt_base, email_item["assunto"])
+                texto = self._extrair(self._preparar(email_item, idioma=idioma), prompt_grupo, email_item["assunto"])
                 if texto:
                     textos.append(texto)
                     emails_ok.append(email_item)
@@ -374,7 +436,7 @@ class Pipeline:
             return f"⏭️ {cfg.nome_final} ignorado (e-mail promocional/administrativo sem notícias)"
 
         if resultados_futebol:
-            final = sanitizar_markdown_final(resultados_futebol + SEPARADOR + corpo_editorial)
+            final = sanitizar_markdown_final(inserir_apos_h1(corpo_editorial, resultados_futebol))
         else:
             final = corpo_editorial
 
