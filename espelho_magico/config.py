@@ -95,5 +95,8 @@ IA_TEMPO_MAX = _env_int("IA_TEMPO_MAX", 600)
 
 # --- Execução ----------------------------------------------------------------
 HTML_PRECLEAN = _env_bool("HTML_PRECLEAN", True)
+# Tamanho máximo (em caracteres) enviado por requisição à IA. Acima disso, o documento
+# é fatiado automaticamente por fronteiras de seção/artigo para evitar 504 (Gemini) e 413 (TPM/Groq).
+MAX_CHARS_POR_CHAMADA = _env_int("MAX_CHARS_POR_CHAMADA", 7500)
 PAUSA_ENTRE_GRUPOS = _env_int("PAUSA_ENTRE_GRUPOS", 15)
 MAX_WORKERS = _env_int("MAX_WORKERS", 0) or max(1, min(len(GEMINI_API_KEYS), 3))

@@ -16,7 +16,13 @@ from . import config, futebol
 from .drive_client import upload_para_drive
 from .gmail_client import autenticar_google, buscar_emails, marcar_como_lido
 from .html_cleaner import limpar_linhas, preparar_conteudo
-from .llm import Extrator, FalhaExtracao, verificar_completude
+from .llm import (
+    Extrator,
+    FalhaExtracao,
+    dividir_conteudo_com_metadados,
+    unir_partes_extraidas,
+    verificar_completude,
+)
 from .log import console, escape, logger
 
 SEPARADOR = "\n\n---\n\n"
@@ -360,6 +366,26 @@ class Pipeline:
         return corpo_final
 
     def _extrair(self, conteudo, prompt, rotulo):
+        partes = dividir_conteudo_com_metadados(conteudo, max_chars=config.MAX_CHARS_POR_CHAMADA)
+        if len(partes) > 1:
+            logger.info(
+                f"[cyan]➜ Conteúdo extenso para '{escape(rotulo)}' ({len(conteudo):,} chars): "
+                f"dividido em {len(partes)} partes (~{len(conteudo) // len(partes):,} chars/parte) "
+                f"para evitar timeout (504) e limite de tokens (413)...[/cyan]"
+            )
+            extraidas = []
+            for idx, parte in enumerate(partes, 1):
+                rotulo_parte = f"{rotulo} [parte {idx}/{len(partes)}]"
+                texto_parte = self._extrair_unico(parte, prompt, rotulo_parte)
+                if not texto_parte:
+                    return None
+                extraidas.append(texto_parte)
+                if idx < len(partes):
+                    time.sleep(2)
+            return unir_partes_extraidas(extraidas)
+        return self._extrair_unico(conteudo, prompt, rotulo)
+
+    def _extrair_unico(self, conteudo, prompt, rotulo):
         try:
             texto = self.extrator.extrair(conteudo, prompt)
         except FalhaExtracao as e:

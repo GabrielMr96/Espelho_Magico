@@ -1,5 +1,6 @@
 """Extração via IA: Gemini (rotação de chaves + fallback de modelos), provedor alternativo e Perplexity."""
 import random
+import re
 import threading
 import time
 
@@ -37,6 +38,121 @@ class RespostaTruncada(Exception):
         self.texto = texto
 
 
+MIN_CHARS_PARA_DIVIDIR = 4000
+_RE_BLOCO_METADADOS = re.compile(r"^\s*(<metadados>.*?</metadados>)\s*", re.S)
+_RE_BLOCO_DOC = re.compile(r"^\s*<documento_entrada>\s*(.*?)\s*</documento_entrada>\s*$", re.S)
+_RE_LINHA_META_LEGADO = re.compile(r"^\s*(\[METADADOS DO E-MAIL[^\n]*\])\s*\n+", re.S)
+
+
+def _desempacotar_conteudo(conteudo):
+    """Separa (prefixo_metadados, corpo_interno, tinha_tag_doc)."""
+    texto = conteudo.strip()
+    meta = ""
+    m_meta = _RE_BLOCO_METADADOS.match(texto)
+    if m_meta:
+        meta = m_meta.group(1).strip()
+        texto = texto[m_meta.end():].strip()
+    else:
+        m_leg = _RE_LINHA_META_LEGADO.match(texto)
+        if m_leg:
+            meta = m_leg.group(1).strip()
+            texto = texto[m_leg.end():].strip()
+
+    m_doc = _RE_BLOCO_DOC.match(texto)
+    if m_doc:
+        return meta, m_doc.group(1).strip(), True
+    return meta, texto, False
+
+
+def _empacotar_conteudo(meta, corpo, com_tag_doc):
+    corpo_fmt = f"<documento_entrada>\n{corpo.strip()}\n</documento_entrada>" if com_tag_doc else corpo.strip()
+    if meta:
+        return f"{meta}\n\n{corpo_fmt}"
+    return corpo_fmt
+
+
+def dividir_em_duas_partes(conteudo):
+    """Divide uma entrada longa em 2 partes equilibradas respeitando fronteiras de edição, seção (##) ou parágrafo."""
+    meta, corpo, com_tag_doc = _desempacotar_conteudo(conteudo)
+    if len(corpo) < 400:
+        return [conteudo]
+
+    # 1) Se houver múltiplas edições unificadas, prefere separar na fronteira entre edições
+    partes_ed = [p.strip() for p in re.split(r"(?=\n*--- INÍCIO DA EDIÇÃO \d+ ---)", corpo) if p.strip()]
+    if len(partes_ed) >= 2:
+        meio = len(corpo) / 2
+        melhor_k = min(
+            range(1, len(partes_ed)),
+            key=lambda k: abs(sum(len(x) for x in partes_ed[:k]) - meio),
+        )
+        c1 = "\n\n".join(partes_ed[:melhor_k])
+        c2 = "\n\n".join(partes_ed[melhor_k:])
+        return [_empacotar_conteudo(meta, c1, com_tag_doc), _empacotar_conteudo(meta, c2, com_tag_doc)]
+
+    # 2) Caso contrário, divide no marcador estrutural mais próximo do meio (## -> ### -> \n\n -> \n)
+    meio = len(corpo) // 2
+    ini_janela = int(len(corpo) * 0.2)
+    fim_janela = int(len(corpo) * 0.8)
+    corte = None
+    for sep in ("\n## ", "\n### ", "\n\n", "\n"):
+        posicoes = [m.start() for m in re.finditer(re.escape(sep), corpo) if ini_janela <= m.start() <= fim_janela]
+        if posicoes:
+            corte = min(posicoes, key=lambda p: abs(p - meio))
+            break
+    if corte is None:
+        corte = meio
+
+    c1, c2 = corpo[:corte].strip(), corpo[corte:].strip()
+    if not c1 or not c2:
+        return [conteudo]
+
+    # Se o metadado estava embutido dentro do bloco da edição (modo unificado), preserva-o na segunda metade
+    if not meta and "<metadados>" not in c2:
+        m_meta_int = re.search(r"(<metadados>.*?</metadados>)", c1, flags=re.S)
+        if m_meta_int:
+            c2 = f"{m_meta_int.group(1)}\n\n{c2}"
+
+    return [_empacotar_conteudo(meta, c1, com_tag_doc), _empacotar_conteudo(meta, c2, com_tag_doc)]
+
+
+def dividir_conteudo_com_metadados(conteudo, max_chars=14000):
+    """Divide recursivamente o conteúdo até que cada parte tenha no máximo `max_chars` caracteres."""
+    if not max_chars or len(conteudo) <= max_chars:
+        return [conteudo]
+    metades = dividir_em_duas_partes(conteudo)
+    if len(metades) == 1:
+        return [conteudo]
+    saida = []
+    for metade in metades:
+        saida.extend(dividir_conteudo_com_metadados(metade, max_chars=max_chars))
+    return saida
+
+
+def unir_partes_extraidas(partes):
+    """Junta o Markdown extraído de múltiplas partes mantendo apenas um cabeçalho # Data no topo."""
+    validas = []
+    for p in partes:
+        if not p or not p.strip():
+            continue
+        limpa = p.strip()
+        m_cerca = re.match(r"^\s*```(?:markdown|md)?\s*\n(.*?)\n\s*```\s*$", limpa, flags=re.S | re.I)
+        if m_cerca:
+            limpa = m_cerca.group(1).strip()
+        if "[SEM_CONTEUDO_EDITORIAL]" in limpa:
+            continue
+        validas.append(limpa)
+
+    if not validas:
+        return "[SEM_CONTEUDO_EDITORIAL]"
+
+    resultado = [validas[0]]
+    for parte in validas[1:]:
+        sem_h1 = re.sub(r"^\s*#\s+[^\n]+\n*", "", parte, count=1).strip()
+        if sem_h1:
+            resultado.append(sem_h1)
+    return "\n\n".join(resultado)
+
+
 class GerenciadorGemini:
     def __init__(self, api_keys, modelos, max_output_tokens=None, sleep=time.sleep, client_factory=None,
                  timeout=None, clock=time.monotonic):
@@ -67,11 +183,13 @@ class GerenciadorGemini:
         if isinstance(codigo, int):
             return codigo
         texto = str(erro)
-        for c in (429, 503, 404, 500):
+        for c in (429, 503, 504, 404, 500):
             if str(c) in texto:
                 return c
         if "RESOURCE_EXHAUSTED" in texto:
             return 429
+        if "DEADLINE_EXCEEDED" in texto:
+            return 504
         if "UNAVAILABLE" in texto:
             return 503
         if "NOT_FOUND" in texto:
@@ -112,7 +230,11 @@ class GerenciadorGemini:
                         indice = self._proxima_chave()
                         continue
                     raise ErroTransitorio(f"Cota esgotada em todas as chaves para {modelo}.", "429")
-                if codigo in (500, 502, 503, 504):
+                if codigo == 504:
+                    raise ErroTransitorio(
+                        f"Serviço indisponível (504) no {modelo}: {self._detalhe(e)}", "504"
+                    )
+                if codigo in (500, 502, 503):
                     raise ErroTransitorio(
                         f"Serviço indisponível ({codigo}) no {modelo}: {self._detalhe(e)}", "503"
                     )
@@ -157,6 +279,16 @@ class GerenciadorGemini:
                 try:
                     return self.gerar(conteudo, prompt, modelo)
                 except RespostaTruncada as e:
+                    if len(conteudo) >= MIN_CHARS_PARA_DIVIDIR:
+                        metades = dividir_em_duas_partes(conteudo)
+                        if len(metades) == 2:
+                            logger.warning(
+                                f"[yellow]  ⚠ {modelo} atingiu MAX_TOKENS em entrada longa ({len(conteudo):,} chars). "
+                                f"Dividindo em 2 partes para manter o modelo principal...[/yellow]"
+                            )
+                            r1 = self.extrair(metades[0], prompt, max_rodadas, backoff_base, backoff_max, tempo_max)
+                            r2 = self.extrair(metades[1], prompt, max_rodadas, backoff_base, backoff_max, tempo_max)
+                            return unir_partes_extraidas([r1, r2])
                     logger.warning(f"[yellow]  ⚠ {modelo} atingiu o limite de tokens (resposta incompleta). Tentando outro modelo...[/yellow]")
                     if melhor_truncado is None or len(e.texto) > len(melhor_truncado):
                         melhor_truncado = e.texto
@@ -164,6 +296,16 @@ class GerenciadorGemini:
                 except ModeloIndisponivel as e:
                     logger.warning(f"[yellow]  ⚠ {escape(str(e))} Ignorando este modelo nesta execução.[/yellow]")
                 except ErroTransitorio as e:
+                    if e.motivo in ("504", "timeout") and len(conteudo) >= MIN_CHARS_PARA_DIVIDIR:
+                        metades = dividir_em_duas_partes(conteudo)
+                        if len(metades) == 2:
+                            logger.warning(
+                                f"[yellow]  ⚠ {escape(str(e))} Dividindo entrada ({len(conteudo):,} chars) "
+                                f"em 2 partes menores para processar sem downgradar o modelo...[/yellow]"
+                            )
+                            r1 = self.extrair(metades[0], prompt, max_rodadas, backoff_base, backoff_max, tempo_max)
+                            r2 = self.extrair(metades[1], prompt, max_rodadas, backoff_base, backoff_max, tempo_max)
+                            return unir_partes_extraidas([r1, r2])
                     motivos.add(e.motivo)
                     logger.warning(f"[yellow]  ⚠ {escape(str(e))} Tentando próximo modelo...[/yellow]")
                 except Exception as e:
@@ -313,14 +455,32 @@ class ProvedorAlternativo:
                         logger.warning(f"[yellow]⚠ {self.nome} atingiu ALT_MAX_TOKENS; a resposta pode estar incompleta.[/yellow]")
                     return texto
                 detalhe = resposta.text[:300]
-                if resposta.status_code == 400 and "temperature" in detalhe and not self._sem_temperatura:
+                detalhe_low = detalhe.lower()
+                if resposta.status_code == 400 and "temperature" in detalhe_low and not self._sem_temperatura:
                     self._sem_temperatura = True
                     continue
+                eh_erro_tamanho = resposta.status_code == 413 or (
+                    resposta.status_code in (400, 429)
+                    and any(t in detalhe_low for t in ("request too large", "reduce your message size", "context_length"))
+                )
+                if eh_erro_tamanho and len(conteudo) >= 1500:
+                    metades = dividir_em_duas_partes(conteudo)
+                    if len(metades) == 2:
+                        logger.warning(
+                            f"[yellow]  ⚠ {self.nome} recusou o tamanho da requisição ({resposta.status_code} / limite de TPM). "
+                            f"Dividindo entrada ({len(conteudo):,} chars) em 2 partes menores...[/yellow]"
+                        )
+                        r1 = self.gerar(metades[0], prompt)
+                        self._sleep(15)
+                        r2 = self.gerar(metades[1], prompt)
+                        return unir_partes_extraidas([r1, r2])
                 if resposta.status_code not in (408, 409, 429, 500, 502, 503, 504, 529):
                     raise FalhaExtracao(f"{self.nome} recusou a requisição ({resposta.status_code}): {detalhe}")
                 ultimo_erro = f"{resposta.status_code}: {detalhe}"
             if tentativa < self.tentativas - 1:
                 espera = min(10 * (2 ** tentativa), 90) + random.uniform(0, 3)
+                if "tokens per minute" in ultimo_erro.lower() or "tpm" in ultimo_erro.lower():
+                    espera = max(espera, 35)
                 logger.warning(f"[yellow]  ⚠ {self.nome} indisponível ({escape(ultimo_erro[:140])}). "
                                f"Nova tentativa em {espera:.0f}s...[/yellow]")
                 self._sleep(espera)

@@ -213,3 +213,80 @@ def test_perplexity_desativa_busca_externa(monkeypatch):
     assert "7 de novembro" in out
     assert capturado["json"]["disable_search"] is True
 
+
+def test_dividir_conteudo_com_metadados_e_unir_partes():
+    from espelho_magico.llm import dividir_conteudo_com_metadados, unir_partes_extraidas
+
+    ed1 = "<metadados>\n[METADADOS DO E-MAIL — Data do e-mail: 9 de novembro de 2026]\n</metadados>\n\n" + (
+        "\n\n## Notícia A\n" + ("Parágrafo longo da notícia A. " * 120)
+        + "\n\n## Notícia B\n" + ("Parágrafo longo da notícia B. " * 120)
+    )
+    ed2 = "<metadados>\n[METADADOS DO E-MAIL — Data do e-mail: 8 de novembro de 2026]\n</metadados>\n\n" + (
+        "\n\n## Notícia C\n" + ("Parágrafo longo da notícia C. " * 120)
+    )
+    combinado = (
+        f"<documento_entrada>\n--- INÍCIO DA EDIÇÃO 1 ---\n\n{ed1}\n\n"
+        f"--- INÍCIO DA EDIÇÃO 2 ---\n\n{ed2}\n</documento_entrada>"
+    )
+    partes = dividir_conteudo_com_metadados(combinado, max_chars=6000)
+    assert len(partes) >= 3
+    assert all(len(p) <= 6000 for p in partes)
+    assert all("<metadados>" in p and "<documento_entrada>" in p for p in partes)
+
+    unido = unir_partes_extraidas([
+        "# 9 de novembro de 2026\n\n## Notícia A\n\nCorpo A.",
+        "# 9 de novembro de 2026\n\n## Notícia B\n\nCorpo B.",
+        "# 8 de novembro de 2026\n\n## Notícia C\n\nCorpo C.",
+    ])
+    assert unido.count("# 9 de novembro de 2026") == 1
+    assert "# 8 de novembro de 2026" not in unido
+    assert "## Notícia A" in unido and "## Notícia B" in unido and "## Notícia C" in unido
+
+
+def test_gemini_504_divide_entrada_longa_sem_downgrade_de_modelo():
+    class ClienteSensivelTamanho:
+        def __init__(self):
+            self.chamadas = []
+            self.models = self
+
+        def generate_content(self, model, contents, config):
+            texto_entrada = contents[0]
+            self.chamadas.append((model, len(texto_entrada)))
+            if len(texto_entrada) > 5000:
+                raise _api_error(504)
+            return _resposta(f"# 9 de novembro de 2026\n\n## Parte extraída ({len(texto_entrada)})")
+
+    c = ClienteSensivelTamanho()
+    g, _ = _gerenciador([c], ["gemini-3.8-flash", "gemini-3.7-flash"])
+    entrada_grande = (
+        "<metadados>\n[METADADOS DO E-MAIL — Data do e-mail: 9 de novembro de 2026]\n</metadados>\n\n"
+        "<documento_entrada>\n## Bloco 1\n" + ("Texto 1. " * 450)
+        + "\n\n## Bloco 2\n" + ("Texto 2. " * 450) + "\n</documento_entrada>"
+    )
+    assert len(entrada_grande) >= 6000
+    saida = g.extrair(entrada_grande, "prompt")
+    # Todas as chamadas usaram exclusivamente o modelo topo (gemini-3.8-flash), sem cair para o 3.7
+    assert [m for m, _ in c.chamadas] == ["gemini-3.8-flash", "gemini-3.8-flash", "gemini-3.8-flash"]
+    assert saida.count("# 9 de novembro de 2026") == 1
+    assert saida.count("## Parte extraída") == 2
+
+
+def test_alternativo_413_divide_entrada_e_une_resposta():
+    from espelho_magico.llm import ProvedorAlternativo
+
+    erro_413 = RespostaHTTP(
+        413,
+        texto='{"error":{"message":"Request too large for model openai/gpt-oss-120b on TPM: Limit 8000, Requested 15184"}}',
+    )
+    ok_1 = RespostaHTTP(200, {"choices": [{"message": {"content": "# 9 de novembro de 2026\n\n## Parte 1\n\nTexto 1"}, "finish_reason": "stop"}]})
+    ok_2 = RespostaHTTP(200, {"choices": [{"message": {"content": "# 9 de novembro de 2026\n\n## Parte 2\n\nTexto 2"}, "finish_reason": "stop"}]})
+    post, chamadas = _post_fake([erro_413, ok_1, ok_2])
+    p = ProvedorAlternativo("openai", "k", "openai/gpt-oss-120b", base_url="https://api.groq.com/openai/v1", sleep=lambda s: None, post=post)
+
+    entrada = "## Artigo 1\n" + ("Conteúdo A. " * 120) + "\n\n## Artigo 2\n" + ("Conteúdo B. " * 120)
+    saida = p.gerar(entrada, "prompt")
+    assert len(chamadas) == 3
+    assert saida.startswith("# 9 de novembro de 2026")
+    assert "## Parte 1" in saida and "## Parte 2" in saida
+
+
