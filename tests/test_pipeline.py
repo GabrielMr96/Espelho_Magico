@@ -5,6 +5,7 @@ from espelho_magico.pipeline import (
     Opcoes,
     Pipeline,
     agrupar_emails,
+    aplicar_cabecalho_edicao,
     buscar_edicoes_faltantes_na_web,
     buscar_email_de_url,
     deduplicar_secoes,
@@ -284,6 +285,19 @@ def test_buscar_edicoes_faltantes_na_web_recupera_apenas_edicao_nova(tmp_path):
     assert recuperados[0]["remetente"] == "tns sports"
     assert "o brasileirão virou a la liga?" in recuperados[0]["assunto"]
     assert formatar_data_email(recuperados[0]["data"]) == "10 de novembro de 2026"
+
+
+def test_aplicar_cabecalho_edicao_e_compatibilidade_com_data(tmp_path):
+    md = "# 10 de novembro de 2026\n\n## Manchete Principal\n\nTexto da notícia."
+    com_cabecalho = aplicar_cabecalho_edicao(md, "Controle Quebrado #274.md")
+    assert com_cabecalho.splitlines()[0] == "# Controle Quebrado #274 — 10 de novembro de 2026"
+    # Idempotente se aplicado novamente
+    assert aplicar_cabecalho_edicao(com_cabecalho, "Controle Quebrado #274.md") == com_cabecalho
+
+    # Continua sendo lido normalmente por ultima_data_extraida_local
+    (tmp_path / "Controle Quebrado #274.md").write_text(com_cabecalho, encoding="utf-8")
+    assert ultima_data_extraida_local(tmp_path, "Controle Quebrado") == datetime.date(2026, 11, 10)
+
 
 
 

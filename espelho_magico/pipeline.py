@@ -573,6 +573,27 @@ def inserir_apos_h1(corpo, bloco_extra):
     return f"{extra_limpo}{SEPARADOR}{corpo_limpo}"
 
 
+def aplicar_cabecalho_edicao(texto, nome_final):
+    """Inclui o nome do programa e o número da edição no cabeçalho H1 do topo para o NotebookLM:
+    Ex.: '# 10 de novembro de 2026' + 'Controle Quebrado #274.md'
+      -> '# Controle Quebrado #274 — 10 de novembro de 2026'
+    """
+    if not texto or not nome_final:
+        return texto
+    identificador = Path(nome_final).stem.strip()
+    if not identificador:
+        return texto
+    texto_limpo = texto.strip()
+    m = re.match(r"^#\s+([^\n]+)(.*)$", texto_limpo, flags=re.S)
+    if m:
+        h1_atual = m.group(1).strip()
+        resto = m.group(2)
+        if h1_atual.lower().startswith(identificador.lower()):
+            return texto_limpo
+        return f"# {identificador} — {h1_atual}{resto}"
+    return f"# {identificador}\n\n{texto_limpo}"
+
+
 def sanitizar_markdown_final(texto):
     """Higieniza o Markdown final antes de salvar e subir para o Drive:
     - Remove eventuais cercas ```markdown externas devolvidas pela IA.
@@ -837,6 +858,7 @@ class Pipeline:
             final = sanitizar_markdown_final(inserir_apos_h1(corpo_editorial, resultados_futebol))
         else:
             final = corpo_editorial
+        final = aplicar_cabecalho_edicao(final, cfg.nome_final)
 
         self.pasta_saida.mkdir(parents=True, exist_ok=True)
         caminho = self.pasta_saida / cfg.nome_final
