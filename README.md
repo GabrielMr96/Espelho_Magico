@@ -4,16 +4,21 @@ Automação que lê newsletters do Gmail (marcador `Espelho_Magico`), arranca o 
 
 ## 🔄 Fluxo de Processamento
 
-1. **Busca Resiliente no Gmail**: Busca e-mails **não lidos** no marcador configurado, com pacing e backoff automático para respeitar limites de taxa por minuto do Google Cloud (Rate Limit 403).
+1. **Busca Resiliente no Gmail + Dupla Verificação Web**:
+   - Busca e-mails **não lidos** no marcador configurado (`Espelho_Magico`), com pacing e backoff automático para respeitar limites do Google Cloud (Rate Limit 403).
+   - Para as newsletters externas configuradas em `fontes_web` (`the news`, `tns money`, `tns health`, `tns sports`, `tns business`, `tns better work`, `aidrops` e `peak`), se algum e-mail não chegar no Gmail, verifica automaticamente nos arquivos públicos dos sites oficiais se saiu edição com data posterior ao último `.md` salvo em `resultados_markdown/`.
+   - Também permite extração avulsa diretamente via `--url <link>`.
 2. **Agrupamento Inteligente**: Agrupa mensagens por newsletter (mapeamento em `config.json`), detecta o histórico e calcula a numeração da próxima edição automaticamente.
-3. **Pré-limpeza HTML → Markdown**: Converte tabelas de layout para blocos enxutos, remove scripts/estilos e expurga créditos fotográficos puros (`Manoella Mello | Globo`, `Fortune | Getty Images`), economizando até 90% dos tokens antes do envio à IA.
-4. **Extração Literal com IA**: Extrai o conteúdo sem resumir ou parafrasear usando o Gemini (com rotação de chaves e fallback entre modelos Flash ativos), com Perplexity opcional.
-5. **Placares Esportivos**: No *Gol Contra*, injeta automaticamente os placares do dia anterior via API pública da ESPN, filtrando por ligas de elite e clubes de destaque.
+3. **Pré-limpeza HTML → Markdown**: Converte tabelas de layout para blocos enxutos, preserva linhas de tabelas de dados (cotações/mercados), remove menus/rodapés web (`<nav>`, `<footer>`, `<aside>`), blocos de "Leia mais sobre..." e créditos fotográficos puros (`Manoella Mello | Globo`, `Fortune | Getty Images`), economizando até 90% dos tokens antes do envio à IA.
+4. **Extração Literal com IA (Fatiamento Anti-504 e Anti-413)**:
+   - Extrai o conteúdo sem resumir ou parafrasear usando o Gemini (`gemini-3.8-flash` como prioridade, com rotação de chaves e fallback para provedor alternativo `ALT_*` ou Perplexity com busca web desativada).
+   - Entradas extensas (como unificações de múltiplos e-mails) são fatiadas preventivamente por fronteiras de seção (`MAX_CHARS_POR_CHAMADA`) e contam com auto-divisão binária reativa em caso de `504` (timeout) ou `413` (limite de TPM), mantendo o modelo principal sem downgrade.
+5. **Placares Esportivos**: No *Gol Contra*, injeta automaticamente os placares do dia anterior via API pública da ESPN logo abaixo do cabeçalho `# Data`, filtrando por ligas de elite e clubes de destaque.
 6. **Sanitização para NotebookLM (Áudio/Podcast)**:
-   - Garante **rigorosamente 1 único cabeçalho `#`** por arquivo (com a data da edição);
-   - Remove pontuações terminais (`?`, `!`, `.`) dos títulos `##` para capítulos perfeitos;
+   - Garante **rigorosamente 1 único cabeçalho `#`** na linha 1 de cada arquivo (com a data da edição, em português ou 100% em inglês para programas em `prefixos_ingles`);
+   - Remove cercas ```` ```markdown ```` externas e pontuações terminais (`?`, `!`, `.`, `:`) dos títulos `##` para capítulos perfeitos;
    - Elimina resíduos visuais como `(Aprofunde)` e links quebrados de redes sociais;
-   - Deduplica seções repetidas mantendo novos desdobramentos.
+   - Deduplica seções repetidas por escopo (subtítulos `###` só deduplicam dentro do mesmo `##` pai).
 7. **Publicação**: Salva em `resultados_markdown/`, envia/atualiza no Google Drive e marca os e-mails como lidos no Gmail.
 
 ## 🚀 Como rodar
@@ -31,10 +36,13 @@ Automação que lê newsletters do Gmail (marcador `Espelho_Magico`), arranca o 
 
 3. **Execução**
    ```powershell
-   python orquestrador.py                       # modo normal (interativo)
+   python orquestrador.py                       # modo normal (Gmail + verificação automática nos sites oficiais)
    python orquestrador.py --dry-run             # simulação: salva em _dry_run sem alterar Gmail/Drive
    python orquestrador.py --grupo "the news"    # filtra apenas um grupo específico
    python orquestrador.py --unificar sim        # mescla 2+ e-mails do mesmo grupo sem perguntar
+   python orquestrador.py --url "https://..."   # extrai diretamente a partir do link de uma edição online
+   python orquestrador.py --sem-web             # consulta apenas o Gmail, desativando a verificação nos sites
+   python orquestrador.py --ia alt              # usa o provedor alternativo configurado no .env nesta execução
    python orquestrador.py --sem-interacao       # para execução automatizada (Agendador de Tarefas)
    python orquestrador.py --help                # opções disponíveis
    ```
@@ -43,9 +51,9 @@ Automação que lê newsletters do Gmail (marcador `Espelho_Magico`), arranca o 
 
 | Onde | O quê |
 | --- | --- |
-| `config.json` | Mapeamento de prefixos → títulos, diretrizes específicas por fonte (`dicas_por_prefixo`), idioma (`prefixos_ingles`), ordem de modelos Gemini e filtros de ligas/clubes |
-| `.env` | Chaves de API, `IA_PADRAO`, retentativas (`MAX_RODADAS`, `BACKOFF_*`), workers paralelos (`MAX_WORKERS`), IDs de pasta do Drive, label do Gmail |
-| `espelho_magico/prompts/` | Diretrizes de extração literal, tratamento de imagens para áudio e modo unificação |
+| `config.json` | Mapeamento de prefixos → títulos, arquivos públicos para dupla verificação (`fontes_web`), diretrizes específicas por fonte (`dicas_por_prefixo`), idioma (`prefixos_ingles`), ordem de modelos Gemini e filtros de ligas/clubes |
+| `.env` | Chaves de API (`GEMINI_API_KEY`, `ALT_*`, `PERPLEXITY_API_KEY`), `IA_PADRAO`, retentativas (`MAX_RODADAS`, `BACKOFF_*`), tamanho máximo por chamada (`MAX_CHARS_POR_CHAMADA`), verificação web (`VERIFICAR_FONTES_WEB`), workers paralelos (`MAX_WORKERS`), IDs de pasta do Drive, label do Gmail |
+| `espelho_magico/prompts/` | Diretrizes de extração literal, tratamento de imagens/tabelas/quizzes para áudio e modo unificação |
 
 ## 📁 Estrutura
 
