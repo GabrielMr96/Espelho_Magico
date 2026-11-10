@@ -1,16 +1,21 @@
+import datetime
+
 from espelho_magico.drive_client import montar_query
 from espelho_magico.pipeline import (
     Opcoes,
     Pipeline,
     agrupar_emails,
+    buscar_edicoes_faltantes_na_web,
     buscar_email_de_url,
     deduplicar_secoes,
     eh_extracao_vazia_ou_invalida,
+    extrair_data_de_texto,
     formatar_data_email,
     inserir_apos_h1,
     maior_edicao_existente,
     nome_fallback,
     sanitizar_markdown_final,
+    ultima_data_extraida_local,
 )
 
 MAPA = {"tns sports": "Gol Contra", "the news": "Boletim Fora de Ordem", "peak": "Dispatch"}
@@ -220,5 +225,65 @@ def test_buscar_email_de_url_infere_prefixo_e_data():
     assert item["remetente"] == "tns sports"
     assert item["assunto"] == "tns sports: o brasileirão virou a la liga?"
     assert formatar_data_email(item["data"]) == "10 de novembro de 2026"
+
+
+def test_extrair_data_e_ultima_data_extraida_local(tmp_path):
+    assert extrair_data_de_texto("# 9 de novembro de 2026") == datetime.date(2026, 11, 9)
+    assert extrair_data_de_texto("# November 10, 2026") == datetime.date(2026, 11, 10)
+    assert extrair_data_de_texto("Nov. 5, 2026") == datetime.date(2026, 11, 5)
+    assert extrair_data_de_texto("/newsletter/sports/10-11-2026") == datetime.date(2026, 11, 10)
+
+    (tmp_path / "Gol Contra #195.md").write_text("# 6 de novembro de 2026\n\n## Titulo", encoding="utf-8")
+    (tmp_path / "Gol Contra #196.md").write_text("# 9 de novembro de 2026\n\n## Titulo", encoding="utf-8")
+    assert ultima_data_extraida_local(tmp_path, "Gol Contra") == datetime.date(2026, 11, 9)
+
+
+def test_buscar_edicoes_faltantes_na_web_recupera_apenas_edicao_nova(tmp_path):
+    (tmp_path / "Gol Contra #196.md").write_text("# 9 de novembro de 2026\n\n## Jogo", encoding="utf-8")
+    (tmp_path / "Boletim Fora de Ordem #315.md").write_text("# 10 de novembro de 2026\n\n## Dia", encoding="utf-8")
+
+    paginas = {
+        "https://thenews.com.br/newsletter/sports": (
+            '<html><body>'
+            '<a href="/newsletter/sports/10-11-2026">10 de novembro de 2026 · Sports · o brasileirão virou a la liga?</a>'
+            '<a href="/newsletter/sports/09-11-2026">09 de novembro de 2026 · Sports · palmeiras x grêmio</a>'
+            '</body></html>'
+        ),
+        "https://thenews.com.br/newsletter/sports/10-11-2026": (
+            '<html><body><h1>o brasileirão virou a la liga?</h1><p>Conteúdo da edição</p></body></html>'
+        ),
+        "https://thenews.com.br/newsletter/the-news": (
+            '<html><body>'
+            '<a href="/newsletter/the-news/10-11-2026">10 de novembro de 2026 · The News · manchete de hoje</a>'
+            '</body></html>'
+        ),
+    }
+
+    class Resp:
+        def __init__(self, text):
+            self.text = text
+            self.status_code = 200
+
+        def raise_for_status(self):
+            pass
+
+    fontes = {
+        "tns sports": {"tipo": "thenews", "arquivo_url": "https://thenews.com.br/newsletter/sports"},
+        "the news": {"tipo": "thenews", "arquivo_url": "https://thenews.com.br/newsletter/the-news"},
+    }
+    mapeamento = {"tns sports": "Gol Contra", "the news": "Boletim Fora de Ordem"}
+
+    recuperados = buscar_edicoes_faltantes_na_web(
+        emails_atuais=[],
+        pasta_resultados=tmp_path,
+        fontes_web=fontes,
+        mapeamento=mapeamento,
+        get=lambda url, **kw: Resp(paginas[url]),
+    )
+    assert len(recuperados) == 1
+    assert recuperados[0]["remetente"] == "tns sports"
+    assert "o brasileirão virou a la liga?" in recuperados[0]["assunto"]
+    assert formatar_data_email(recuperados[0]["data"]) == "10 de novembro de 2026"
+
 
 

@@ -50,6 +50,8 @@ MAPEAMENTO_PREFIXOS = _CONFIG["mapeamento_prefixos"]
 PREFIXO_FUTEBOL = _CONFIG.get("prefixo_futebol", "tns sports")
 PREFIXOS_INGLES = {p.lower() for p in _CONFIG.get("prefixos_ingles", ["peak"])}
 DICAS_POR_PREFIXO = {k.lower(): v for k, v in _CONFIG.get("dicas_por_prefixo", {}).items()}
+FONTES_WEB = {k.lower(): v for k, v in _CONFIG.get("fontes_web", {}).items()}
+VERIFICAR_FONTES_WEB = _env_bool("VERIFICAR_FONTES_WEB", True)
 FUTEBOL = _CONFIG["futebol"]
 
 # --- Google ------------------------------------------------------------------

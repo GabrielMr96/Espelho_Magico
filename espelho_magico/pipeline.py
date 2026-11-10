@@ -6,6 +6,7 @@ import re
 import sys
 import threading
 import time
+import urllib.parse
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -62,6 +63,7 @@ class Opcoes:
     max_workers: int = 0
     ia: str = ""  # "" = IA_PADRAO do .env | "gemini" | "alt" | "perplexity"
     urls: list = field(default_factory=list)
+    verificar_web: bool = True
 
 
 @dataclass
@@ -110,6 +112,7 @@ def nome_fallback(assunto, agora=None):
 
 
 _SLUG_URL_PARA_PREFIXO = {
+    "/newsletter/the-news": "the news",
     "/newsletter/sports": "tns sports",
     "/newsletter/money": "tns money",
     "/newsletter/health": "tns health",
@@ -118,25 +121,102 @@ _SLUG_URL_PARA_PREFIXO = {
     "/newsletter/betterwork": "tns better work",
 }
 
+_MAPA_MESES_NOME = {
+    "janeiro": 1, "jan": 1, "january": 1,
+    "fevereiro": 2, "fev": 2, "feb": 2, "february": 2,
+    "março": 3, "marco": 3, "mar": 3, "march": 3,
+    "abril": 4, "abr": 4, "apr": 4, "april": 4,
+    "maio": 5, "mai": 5, "may": 5,
+    "junho": 6, "jun": 6, "june": 6,
+    "julho": 7, "jul": 7, "july": 7,
+    "agosto": 8, "ago": 8, "aug": 8, "august": 8,
+    "setembro": 9, "set": 9, "sep": 9, "sept": 9, "september": 9,
+    "outubro": 10, "out": 10, "oct": 10, "october": 10,
+    "novembro": 11, "nov": 11, "november": 11,
+    "dezembro": 12, "dez": 12, "dec": 12, "december": 12,
+}
 
-def _inferir_data_de_url(url, html=""):
-    """Extrai data DD-MM-AAAA ou AAAA-MM-DD da URL (ou do HTML) e devolve em formato RFC 2822."""
-    for padrao, ordem in (
-        (r"\b(\d{2})[-/](\d{2})[-/](20\d{2})\b", "dmy"),
-        (r"\b(20\d{2})[-/](\d{2})[-/](\d{2})\b", "ymd"),
-    ):
-        for fonte in (url, html[:4000]):
-            m = re.search(padrao, fonte)
-            if m:
-                try:
-                    if ordem == "dmy":
-                        d, mes, ano = int(m.group(1)), int(m.group(2)), int(m.group(3))
-                    else:
-                        ano, mes, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
-                    dt = datetime.datetime(ano, mes, d, 9, 0, tzinfo=datetime.timezone.utc)
-                    return email.utils.format_datetime(dt)
-                except ValueError:
-                    continue
+_RE_DATA_PT = re.compile(
+    r"\b(\d{1,2})\s+de\s+(janeiro|fevereiro|março|marco|abril|maio|junho|julho|"
+    r"agosto|setembro|outubro|novembro|dezembro)\s+de\s+(20\d{2})\b",
+    re.I,
+)
+_RE_DATA_EN = re.compile(
+    r"\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|"
+    r"aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)"
+    r"\.?\s+(\d{1,2}),?\s+(20\d{2})\b",
+    re.I,
+)
+_RE_DATA_DMY = re.compile(r"\b(\d{2})[-/](\d{2})[-/](20\d{2})\b")
+_RE_DATA_YMD = re.compile(r"\b(20\d{2})[-/](\d{2})[-/](\d{2})\b")
+
+
+def extrair_data_de_texto(texto):
+    """Extrai um `datetime.date` de strings em PT ('10 de novembro de 2026'), EN ('Nov 10, 2026'), DD-MM-AAAA ou AAAA-MM-DD."""
+    if not texto:
+        return None
+    m = _RE_DATA_PT.search(texto)
+    if m:
+        try:
+            return datetime.date(int(m.group(3)), _MAPA_MESES_NOME[m.group(2).lower()], int(m.group(1)))
+        except ValueError:
+            pass
+    m = _RE_DATA_EN.search(texto)
+    if m:
+        try:
+            return datetime.date(int(m.group(3)), _MAPA_MESES_NOME[m.group(1).lower().rstrip(".")], int(m.group(2)))
+        except ValueError:
+            pass
+    m = _RE_DATA_DMY.search(texto)
+    if m:
+        try:
+            return datetime.date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+        except ValueError:
+            pass
+    m = _RE_DATA_YMD.search(texto)
+    if m:
+        try:
+            return datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except ValueError:
+            pass
+    return None
+
+
+def ultima_data_extraida_local(pasta, titulo_base):
+    """Lê os últimos arquivos `.md` de `titulo_base` em `pasta` e devolve a maior `datetime.date` do cabeçalho `# Data`."""
+    arquivos = []
+    for arq in Path(pasta).glob(f"{glob_escape(titulo_base)} #*.md"):
+        m = re.search(r"#(\d+)\.md$", arq.name)
+        if m:
+            arquivos.append((int(m.group(1)), arq))
+    if not arquivos:
+        return None
+    arquivos.sort(key=lambda par: par[0], reverse=True)
+    datas = []
+    for _, arq in arquivos[:3]:
+        try:
+            primeiras = "\n".join(arq.read_text(encoding="utf-8", errors="ignore").splitlines()[:5])
+            dt = extrair_data_de_texto(primeiras)
+            if dt:
+                datas.append(dt)
+        except Exception:
+            continue
+    return max(datas) if datas else None
+
+
+def _data_para_rfc2822(data_date):
+    dt = datetime.datetime(data_date.year, data_date.month, data_date.day, 9, 0, tzinfo=datetime.timezone.utc)
+    return email.utils.format_datetime(dt)
+
+
+def _inferir_data_de_url(url, html="", data_forcada=None):
+    """Extrai data DD-MM-AAAA, AAAA-MM-DD ou por extenso da URL/HTML e devolve em formato RFC 2822."""
+    if isinstance(data_forcada, datetime.date):
+        return _data_para_rfc2822(data_forcada)
+    for fonte in (url, html[:6000]):
+        dt = extrair_data_de_texto(fonte)
+        if dt:
+            return _data_para_rfc2822(dt)
     return email.utils.format_datetime(datetime.datetime.now(datetime.timezone.utc))
 
 
@@ -144,6 +224,8 @@ def _inferir_prefixo_de_url(url, html, filtros_grupo, mapeamento):
     """Identifica o prefixo de `mapeamento` a partir de `--grupo`, do caminho da URL ou do HTML."""
     for filtro in filtros_grupo or []:
         f_low = filtro.lower().strip()
+        if f_low in mapeamento:
+            return f_low
         for k, v in mapeamento.items():
             if f_low == k.lower() or f_low == v.lower() or f_low in k.lower() or f_low in v.lower():
                 return k
@@ -156,6 +238,12 @@ def _inferir_prefixo_de_url(url, html, filtros_grupo, mapeamento):
     html_low = html[:8000].lower()
     if "the news sports" in html_low and "tns sports" in mapeamento:
         return "tns sports"
+    if "aidrops" in url_low and "aidrops" in mapeamento:
+        return "aidrops"
+    if "thejobs.com.br" in url_low and "tns better work" in mapeamento:
+        return "tns better work"
+    if "readthepeak.com" in url_low and "peak" in mapeamento:
+        return "peak"
     for k in sorted(mapeamento, key=len, reverse=True):
         if k.lower() in url_low or k.lower() in html_low:
             return k
@@ -164,14 +252,8 @@ def _inferir_prefixo_de_url(url, html, filtros_grupo, mapeamento):
     return None
 
 
-def buscar_email_de_url(url, filtros_grupo=None, mapeamento=None, get=requests.get):
-    """Baixa uma edição online via URL e monta um dicionário compatível com `buscar_emails`."""
+def _montar_item_de_html(url, html, filtros_grupo=None, mapeamento=None, data_forcada=None):
     mapeamento = mapeamento or config.MAPEAMENTO_PREFIXOS
-    logger.info(f"[cyan]➜ Baixando edição a partir da URL: {escape(url)}[/cyan]")
-    resposta = get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=30)
-    resposta.raise_for_status()
-    html = resposta.text
-
     soup = BeautifulSoup(html, "html.parser")
     h1 = soup.find("h1")
     titulo_pagina = (
@@ -181,8 +263,7 @@ def buscar_email_de_url(url, filtros_grupo=None, mapeamento=None, get=requests.g
     )
     prefixo = _inferir_prefixo_de_url(url, html, filtros_grupo, mapeamento)
     assunto = f"{prefixo}: {titulo_pagina}" if prefixo else titulo_pagina
-    data_rfc = _inferir_data_de_url(url, html)
-
+    data_rfc = _inferir_data_de_url(url, soup.get_text(" ", strip=True)[:3000], data_forcada=data_forcada)
     return {
         "id": None,
         "assunto": assunto,
@@ -191,6 +272,209 @@ def buscar_email_de_url(url, filtros_grupo=None, mapeamento=None, get=requests.g
         "conteudo_html": html,
         "eh_html": True,
     }
+
+
+def buscar_email_de_url(url, filtros_grupo=None, mapeamento=None, get=requests.get, data_forcada=None):
+    """Baixa uma edição online via URL e monta um dicionário compatível com `buscar_emails`."""
+    logger.info(f"[cyan]➜ Baixando edição a partir da URL: {escape(url)}[/cyan]")
+    resposta = get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=30)
+    resposta.raise_for_status()
+    return _montar_item_de_html(url, resposta.text, filtros_grupo, mapeamento, data_forcada=data_forcada)
+
+
+def _verificar_fonte_thenews(chave, titulo_base, arquivo_url, ultima_data, get=requests.get):
+    """Verifica na página de arquivo do the news (`thenews.com.br/newsletter/<marca>`) se há edição mais recente."""
+    slug_marca = arquivo_url.rstrip("/").split("/")[-1]
+    prefixo_href = f"/newsletter/{slug_marca}/"
+    resp = get(arquivo_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
+    resp.raise_for_status()
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    candidatos = []
+    vistos = set()
+    for a in soup.find_all("a", href=True):
+        href = a["href"].strip()
+        if not href.startswith(prefixo_href) or "?" in href or href in vistos:
+            continue
+        vistos.add(href)
+        texto_card = a.get_text(" ", strip=True)
+        dt = extrair_data_de_texto(texto_card) or extrair_data_de_texto(href)
+        if not dt:
+            continue
+        if ultima_data and dt <= ultima_data:
+            continue
+        if not ultima_data and (datetime.date.today() - dt).days > 2:
+            continue
+        url_edicao = urllib.parse.urljoin(arquivo_url, href)
+        candidatos.append((dt, url_edicao))
+        if len(candidatos) >= 3:
+            break
+
+    candidatos.sort(key=lambda par: par[0])
+    itens = []
+    for dt, url_edicao in candidatos:
+        logger.info(
+            f"[bold cyan]🌐 [Web] Edição de {dt:%d/%m/%Y} encontrada no site para '{escape(titulo_base)}' "
+            f"(última local: {ultima_data.strftime('%d/%m/%Y') if ultima_data else 'nenhuma'}). Baixando...[/bold cyan]"
+        )
+        itens.append(buscar_email_de_url(url_edicao, filtros_grupo=[chave], get=get, data_forcada=dt))
+    return itens
+
+
+def _verificar_fonte_beehiiv(chave, titulo_base, arquivo_url, ultima_data, get=requests.get):
+    """Verifica arquivo Beehiiv (`aidrops.com.br/archive`, `thejobs.com.br/archive`) por edição mais nova."""
+    resp = get(arquivo_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
+    resp.raise_for_status()
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    link = next((a for a in soup.find_all("a", href=True) if "/p/" in a["href"]), None)
+    if not link:
+        return []
+    url_post = urllib.parse.urljoin(arquivo_url, link["href"].strip())
+    dt_card = extrair_data_de_texto(link.get_text(" ", strip=True))
+    if dt_card is not None:
+        if ultima_data and dt_card <= ultima_data:
+            return []
+        if not ultima_data and (datetime.date.today() - dt_card).days > 2:
+            return []
+        logger.info(
+            f"[bold cyan]🌐 [Web] Edição de {dt_card:%d/%m/%Y} encontrada no site para '{escape(titulo_base)}' "
+            f"(última local: {ultima_data.strftime('%d/%m/%Y') if ultima_data else 'nenhuma'}). Baixando...[/bold cyan]"
+        )
+        return [buscar_email_de_url(url_post, filtros_grupo=[chave], get=get, data_forcada=dt_card)]
+
+    # Quando o card de destaque não exibe a data na vitrine (ex.: AiDrops), inspeciona o cabeçalho do post
+    resp_post = get(url_post, headers={"User-Agent": "Mozilla/5.0"}, timeout=25)
+    resp_post.raise_for_status()
+    soup_post = BeautifulSoup(resp_post.text, "html.parser")
+    texto_topo = soup_post.get_text(" ", strip=True)[:1500]
+    dt_post = extrair_data_de_texto(texto_topo)
+    if not dt_post:
+        return []
+    if ultima_data and dt_post <= ultima_data:
+        return []
+    if not ultima_data and (datetime.date.today() - dt_post).days > 2:
+        return []
+    logger.info(
+        f"[bold cyan]🌐 [Web] Edição de {dt_post:%d/%m/%Y} encontrada no site para '{escape(titulo_base)}' "
+        f"(última local: {ultima_data.strftime('%d/%m/%Y') if ultima_data else 'nenhuma'}). Baixando...[/bold cyan]"
+    )
+    return [_montar_item_de_html(url_post, resp_post.text, filtros_grupo=[chave], data_forcada=dt_post)]
+
+
+def _verificar_fonte_thepeak(chave, titulo_base, arquivo_url, ultima_data, get=requests.get):
+    """Verifica `readthepeak.com/newsletters/morning-brief` e reúne os artigos públicos da edição se faltar."""
+    resp = get(arquivo_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
+    resp.raise_for_status()
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    link = next(
+        (a for a in soup.find_all("a", href=True) if "/newsletters/morning-brief/" in a["href"] and a.get_text(strip=True)),
+        None,
+    )
+    if not link:
+        return []
+    url_edicao = urllib.parse.urljoin(arquivo_url, link["href"].strip())
+    resp_ed = get(url_edicao, headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
+    resp_ed.raise_for_status()
+    soup_ed = BeautifulSoup(resp_ed.text, "html.parser")
+    tag_time = soup_ed.find("time")
+    texto_data = (tag_time.get("datetime") or tag_time.get_text(" ", strip=True)) if tag_time else soup_ed.get_text(" ", strip=True)[:1500]
+    dt_ed = extrair_data_de_texto(texto_data)
+    if not dt_ed:
+        return []
+    if ultima_data and dt_ed <= ultima_data:
+        return []
+    if not ultima_data and (datetime.date.today() - dt_ed).days > 2:
+        return []
+
+    logger.info(
+        f"[bold cyan]🌐 [Web] Edição de {dt_ed:%d/%m/%Y} encontrada no site para '{escape(titulo_base)}' "
+        f"(última local: {ultima_data.strftime('%d/%m/%Y') if ultima_data else 'nenhuma'}). Baixando...[/bold cyan]"
+    )
+    # Se a página da edição exigir login, compõe o HTML a partir dos artigos públicos do dia no sitemap
+    url_sitemap = f"https://readthepeak.com/sitemaps/articles-{dt_ed:%Y-%m}.xml"
+    artigos_html = []
+    try:
+        resp_sm = get(url_sitemap, headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
+        if resp_sm.status_code == 200:
+            ontem_iso = (dt_ed - datetime.timedelta(days=1)).isoformat()
+            hoje_iso = dt_ed.isoformat()
+            for bloco in re.findall(r"<url>.*?</url>", resp_sm.text, flags=re.S):
+                m_loc = re.search(r"<loc>(https://readthepeak\.com/articles/[^<]+)</loc>", bloco)
+                m_mod = re.search(r"<lastmod>([^<]+)</lastmod>", bloco)
+                if not (m_loc and m_mod):
+                    continue
+                mod = m_mod.group(1)
+                if mod.startswith(hoje_iso) or (mod.startswith(ontem_iso) and mod[11:13] >= "14"):
+                    r_art = get(m_loc.group(1), headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
+                    if r_art.status_code == 200:
+                        s_art = BeautifulSoup(r_art.text, "html.parser")
+                        art_tag = s_art.find("article") or s_art.find("main")
+                        if art_tag:
+                            artigos_html.append(str(art_tag))
+    except Exception as e:
+        logger.warning(f"[yellow]⚠ Falha ao consultar sitemap do The Peak: {escape(str(e))}[/yellow]")
+
+    if artigos_html:
+        h1_txt = soup_ed.h1.get_text(" ", strip=True) if soup_ed.h1 else "Morning Brief"
+        html_combinado = f"<html><body><h1>{h1_txt}</h1>\n" + "\n<hr/>\n".join(artigos_html) + "</body></html>"
+        return [_montar_item_de_html(url_edicao, html_combinado, filtros_grupo=[chave], data_forcada=dt_ed)]
+    return [_montar_item_de_html(url_edicao, resp_ed.text, filtros_grupo=[chave], data_forcada=dt_ed)]
+
+
+def buscar_edicoes_faltantes_na_web(
+    emails_atuais, pasta_resultados=None, filtros_grupo=None, fontes_web=None, mapeamento=None, get=requests.get
+):
+    """Dupla verificação: para cada fonte externa sem e-mail não lido hoje, checa no site oficial
+    se saiu edição com data mais recente que o último `.md` salvo em `pasta_resultados`.
+    """
+    pasta_resultados = pasta_resultados or config.RESULTADOS_DIR
+    fontes_web = fontes_web if fontes_web is not None else config.FONTES_WEB
+    mapeamento = mapeamento or config.MAPEAMENTO_PREFIXOS
+    if not fontes_web:
+        return []
+
+    grupos_presentes = set(agrupar_emails(emails_atuais, mapeamento).keys())
+    titulos_presentes = {mapeamento.get(c, c) for c in grupos_presentes}
+    logger.info("[cyan]🔎 [Web] Verificando nos sites oficiais se alguma edição de hoje não chegou por e-mail...[/cyan]")
+
+    recuperados = []
+    for chave, cfg_web in fontes_web.items():
+        titulo_base = mapeamento.get(chave, chave)
+        if filtros_grupo and not any(
+            f.lower() in chave.lower() or f.lower() in titulo_base.lower() for f in filtros_grupo
+        ):
+            continue
+        if chave in grupos_presentes or titulo_base in titulos_presentes:
+            continue
+
+        ultima_data = ultima_data_extraida_local(pasta_resultados, titulo_base)
+        tipo = (cfg_web.get("tipo") or "").lower()
+        arquivo_url = cfg_web.get("arquivo_url") or ""
+        if not arquivo_url:
+            continue
+
+        try:
+            if tipo == "thenews":
+                novos = _verificar_fonte_thenews(chave, titulo_base, arquivo_url, ultima_data, get=get)
+            elif tipo == "beehiiv":
+                novos = _verificar_fonte_beehiiv(chave, titulo_base, arquivo_url, ultima_data, get=get)
+            elif tipo == "thepeak":
+                novos = _verificar_fonte_thepeak(chave, titulo_base, arquivo_url, ultima_data, get=get)
+            else:
+                novos = []
+        except Exception as e:
+            logger.warning(f"[yellow]  ⚠ [Web] Não foi possível verificar '{escape(titulo_base)}' ({escape(arquivo_url)}): {escape(str(e))}[/yellow]")
+            continue
+
+        if novos:
+            recuperados.extend(novos)
+            titulos_presentes.add(titulo_base)
+
+    if not recuperados:
+        logger.info("[dim]  ✔ [Web] Todas as fontes externas estão em dia com os arquivos locais.[/dim]")
+    return recuperados
 
 
 _HEADING = re.compile(r"^(#{2,6})\s+(.*?)\s*#*\s*$")
@@ -635,6 +919,8 @@ def executar(opcoes):
                 return 1
     else:
         emails = buscar_emails(gmail_service)
+        if opcoes.verificar_web and config.VERIFICAR_FONTES_WEB:
+            emails.extend(buscar_edicoes_faltantes_na_web(emails, config.RESULTADOS_DIR, opcoes.grupos))
     if not emails:
         return 0
 

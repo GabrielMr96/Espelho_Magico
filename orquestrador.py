@@ -32,6 +32,8 @@ def parse_args(argv=None):
                              "'alt' usa o provedor ALT_* do .env, com Gemini de fallback.")
     parser.add_argument("--url", action="append", default=[], metavar="URL",
                         help="Extrai diretamente a partir de uma ou mais URLs de edição online (sem buscar no Gmail).")
+    parser.add_argument("--sem-web", action="store_true",
+                        help="Desativa a verificação automática nos sites oficiais quando um e-mail não chega.")
     return parser.parse_args(argv)
 
 
@@ -46,6 +48,7 @@ def main(argv=None):
         max_workers=args.max_workers,
         ia=args.ia,
         urls=args.url,
+        verificar_web=not args.sem_web,
     )
     return executar(opcoes)
 

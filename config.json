@@ -27,6 +27,41 @@
 
   "prefixo_futebol": "tns sports",
 
+  "fontes_web": {
+    "the news": {
+      "tipo": "thenews",
+      "arquivo_url": "https://thenews.com.br/newsletter/the-news"
+    },
+    "tns money": {
+      "tipo": "thenews",
+      "arquivo_url": "https://thenews.com.br/newsletter/money"
+    },
+    "tns health": {
+      "tipo": "thenews",
+      "arquivo_url": "https://thenews.com.br/newsletter/health"
+    },
+    "tns sports": {
+      "tipo": "thenews",
+      "arquivo_url": "https://thenews.com.br/newsletter/sports"
+    },
+    "tns business": {
+      "tipo": "thenews",
+      "arquivo_url": "https://thenews.com.br/newsletter/business"
+    },
+    "tns better work": {
+      "tipo": "beehiiv",
+      "arquivo_url": "https://thejobs.com.br/archive"
+    },
+    "aidrops": {
+      "tipo": "beehiiv",
+      "arquivo_url": "https://www.aidrops.com.br/archive"
+    },
+    "peak": {
+      "tipo": "thepeak",
+      "arquivo_url": "https://readthepeak.com/newsletters/morning-brief"
+    }
+  },
+
   "gemini_models": [
     "gemini-3.8-flash",
     "gemini-3.7-flash",
