@@ -3,6 +3,7 @@ from espelho_magico.pipeline import (
     Opcoes,
     Pipeline,
     agrupar_emails,
+    buscar_email_de_url,
     deduplicar_secoes,
     eh_extracao_vazia_ou_invalida,
     formatar_data_email,
@@ -201,4 +202,23 @@ def test_formatar_data_ingles_e_montar_prompt_por_prefixo():
     assert "<diretrizes_especificas_desta_fonte>" in prompt_peak
     assert "100% EM INGLÊS" in prompt_peak
     assert "<modo_unificacao>" in prompt_peak
+
+
+def test_buscar_email_de_url_infere_prefixo_e_data():
+    class RespFalsa:
+        text = "<html><head><title>10/11/2026 · the news</title></head><body><h1>o brasileirão virou a la liga?</h1></body></html>"
+
+        def raise_for_status(self):
+            pass
+
+    item = buscar_email_de_url(
+        "https://thenews.com.br/newsletter/sports/10-11-2026",
+        mapeamento={"tns sports": "Gol Contra", "the news": "Boletim Fora de Ordem"},
+        get=lambda *a, **kw: RespFalsa(),
+    )
+    assert item["id"] is None
+    assert item["remetente"] == "tns sports"
+    assert item["assunto"] == "tns sports: o brasileirão virou a la liga?"
+    assert formatar_data_email(item["data"]) == "10 de novembro de 2026"
+
 

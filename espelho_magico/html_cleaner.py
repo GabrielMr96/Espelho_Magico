@@ -9,7 +9,7 @@ import re
 from bs4 import BeautifulSoup, Comment
 from markdownify import markdownify
 
-_TAGS_REMOVIDAS = ["script", "style", "head", "meta", "link", "noscript", "title", "svg", "iframe", "form"]
+_TAGS_REMOVIDAS = ["script", "style", "head", "meta", "link", "noscript", "title", "svg", "iframe", "form", "nav", "footer", "aside"]
 
 _ALT_DECORATIVO = re.compile(
     r"^(logo|logotipo|image|imagem|img|icon|ícone|icone|spacer|banner|pixel|"

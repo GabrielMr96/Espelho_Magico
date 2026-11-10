@@ -30,6 +30,8 @@ def parse_args(argv=None):
     parser.add_argument("--ia", choices=["gemini", "alt", "perplexity"], default="",
                         help="IA principal nesta execução (padrão: IA_PADRAO do .env). "
                              "'alt' usa o provedor ALT_* do .env, com Gemini de fallback.")
+    parser.add_argument("--url", action="append", default=[], metavar="URL",
+                        help="Extrai diretamente a partir de uma ou mais URLs de edição online (sem buscar no Gmail).")
     return parser.parse_args(argv)
 
 
@@ -43,6 +45,7 @@ def main(argv=None):
         interativo=interativo_disponivel() and not args.sem_interacao,
         max_workers=args.max_workers,
         ia=args.ia,
+        urls=args.url,
     )
     return executar(opcoes)
 

@@ -9,6 +9,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import requests
+from bs4 import BeautifulSoup
 from rich.panel import Panel
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn, TimeElapsedColumn
 
@@ -59,6 +61,7 @@ class Opcoes:
     interativo: bool = True
     max_workers: int = 0
     ia: str = ""  # "" = IA_PADRAO do .env | "gemini" | "alt" | "perplexity"
+    urls: list = field(default_factory=list)
 
 
 @dataclass
@@ -104,6 +107,90 @@ def nome_fallback(assunto, agora=None):
     agora = agora or datetime.datetime.now()
     base = re.sub(r'[\\/*?:"<>|]', "", assunto)[:50].strip() or "newsletter"
     return base, f"{base}_{agora:%Y%m%d_%H%M%S}.md"
+
+
+_SLUG_URL_PARA_PREFIXO = {
+    "/newsletter/sports": "tns sports",
+    "/newsletter/money": "tns money",
+    "/newsletter/health": "tns health",
+    "/newsletter/business": "tns business",
+    "/newsletter/better-work": "tns better work",
+    "/newsletter/betterwork": "tns better work",
+}
+
+
+def _inferir_data_de_url(url, html=""):
+    """Extrai data DD-MM-AAAA ou AAAA-MM-DD da URL (ou do HTML) e devolve em formato RFC 2822."""
+    for padrao, ordem in (
+        (r"\b(\d{2})[-/](\d{2})[-/](20\d{2})\b", "dmy"),
+        (r"\b(20\d{2})[-/](\d{2})[-/](\d{2})\b", "ymd"),
+    ):
+        for fonte in (url, html[:4000]):
+            m = re.search(padrao, fonte)
+            if m:
+                try:
+                    if ordem == "dmy":
+                        d, mes, ano = int(m.group(1)), int(m.group(2)), int(m.group(3))
+                    else:
+                        ano, mes, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+                    dt = datetime.datetime(ano, mes, d, 9, 0, tzinfo=datetime.timezone.utc)
+                    return email.utils.format_datetime(dt)
+                except ValueError:
+                    continue
+    return email.utils.format_datetime(datetime.datetime.now(datetime.timezone.utc))
+
+
+def _inferir_prefixo_de_url(url, html, filtros_grupo, mapeamento):
+    """Identifica o prefixo de `mapeamento` a partir de `--grupo`, do caminho da URL ou do HTML."""
+    for filtro in filtros_grupo or []:
+        f_low = filtro.lower().strip()
+        for k, v in mapeamento.items():
+            if f_low == k.lower() or f_low == v.lower() or f_low in k.lower() or f_low in v.lower():
+                return k
+
+    url_low = url.lower()
+    for slug, prefixo in _SLUG_URL_PARA_PREFIXO.items():
+        if slug in url_low and prefixo in mapeamento:
+            return prefixo
+
+    html_low = html[:8000].lower()
+    if "the news sports" in html_low and "tns sports" in mapeamento:
+        return "tns sports"
+    for k in sorted(mapeamento, key=len, reverse=True):
+        if k.lower() in url_low or k.lower() in html_low:
+            return k
+    if "thenews.com.br" in url_low and "the news" in mapeamento:
+        return "the news"
+    return None
+
+
+def buscar_email_de_url(url, filtros_grupo=None, mapeamento=None, get=requests.get):
+    """Baixa uma edição online via URL e monta um dicionário compatível com `buscar_emails`."""
+    mapeamento = mapeamento or config.MAPEAMENTO_PREFIXOS
+    logger.info(f"[cyan]➜ Baixando edição a partir da URL: {escape(url)}[/cyan]")
+    resposta = get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=30)
+    resposta.raise_for_status()
+    html = resposta.text
+
+    soup = BeautifulSoup(html, "html.parser")
+    h1 = soup.find("h1")
+    titulo_pagina = (
+        (h1.get_text(" ", strip=True) if h1 else "")
+        or (soup.title.get_text(" ", strip=True) if soup.title else "")
+        or url
+    )
+    prefixo = _inferir_prefixo_de_url(url, html, filtros_grupo, mapeamento)
+    assunto = f"{prefixo}: {titulo_pagina}" if prefixo else titulo_pagina
+    data_rfc = _inferir_data_de_url(url, html)
+
+    return {
+        "id": None,
+        "assunto": assunto,
+        "remetente": prefixo or url,
+        "data": data_rfc,
+        "conteudo_html": html,
+        "eh_html": True,
+    }
 
 
 _HEADING = re.compile(r"^(#{2,6})\s+(.*?)\s*#*\s*$")
@@ -456,9 +543,10 @@ class Pipeline:
                 f"[bold yellow]⚠ E-mail(s) de '{escape(cfg.titulo_base)}' sem conteúdo editorial válido "
                 f"({len(corpo_editorial)} chars). Edição {escape(cfg.nome_final)} descartada para não gerar arquivo vazio.[/bold yellow]"
             )
-            if not self.opcoes.dry_run:
+            if not self.opcoes.dry_run and self.gmail:
                 for email_item in emails_ok:
-                    marcar_como_lido(self.gmail, email_item["id"])
+                    if email_item.get("id"):
+                        marcar_como_lido(self.gmail, email_item["id"])
             return f"⏭️ {cfg.nome_final} ignorado (e-mail promocional/administrativo sem notícias)"
 
         if resultados_futebol:
@@ -483,8 +571,10 @@ class Pipeline:
 
         if self.drive:
             upload_para_drive(self.drive, caminho, cfg.nome_final)
-        for email_item in emails_ok:
-            marcar_como_lido(self.gmail, email_item["id"])
+        if self.gmail:
+            for email_item in emails_ok:
+                if email_item.get("id"):
+                    marcar_como_lido(self.gmail, email_item["id"])
 
         parcial = len(emails_ok) < len(cfg.emails)
         sufixo = f" ({len(emails_ok)}/{len(cfg.emails)} e-mails; os demais continuam não lidos)" if parcial else ""
@@ -517,7 +607,8 @@ class Pipeline:
 
 def executar(opcoes):
     inicio = time.time()
-    titulo = "Iniciando Extração com Espelho Mágico ✨ (Modo E-mail)"
+    modo = "Modo URL" if opcoes.urls else "Modo E-mail"
+    titulo = f"Iniciando Extração com Espelho Mágico ✨ ({modo})"
     if opcoes.dry_run:
         titulo += " [DRY-RUN]"
     console.print(Panel.fit(f"[bold cyan]{escape(titulo)}[/bold cyan]"))
@@ -526,13 +617,24 @@ def executar(opcoes):
         logger.error("[bold red]Erro:[/bold red] Nenhuma GEMINI_API_KEY encontrada no .env.")
         return 1
 
-    try:
-        drive_service, gmail_service = autenticar_google()
-    except Exception as e:
-        logger.error(f"[bold red]Falha na autenticação do Google: {escape(str(e))}[/bold red]")
-        return 1
+    drive_service, gmail_service = None, None
+    if not opcoes.dry_run or not opcoes.urls:
+        try:
+            drive_service, gmail_service = autenticar_google()
+        except Exception as e:
+            logger.error(f"[bold red]Falha na autenticação do Google: {escape(str(e))}[/bold red]")
+            return 1
 
-    emails = buscar_emails(gmail_service)
+    if opcoes.urls:
+        emails = []
+        for u in opcoes.urls:
+            try:
+                emails.append(buscar_email_de_url(u, filtros_grupo=opcoes.grupos))
+            except Exception as e:
+                logger.error(f"[bold red]Falha ao baixar URL '{escape(u)}': {escape(str(e))}[/bold red]")
+                return 1
+    else:
+        emails = buscar_emails(gmail_service)
     if not emails:
         return 0
 
