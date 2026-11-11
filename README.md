@@ -54,6 +54,7 @@ Automação que lê newsletters do Gmail (marcador `Espelho_Magico`), arranca o 
 | `config.json` | Mapeamento de prefixos → títulos, arquivos públicos para dupla verificação (`fontes_web`), diretrizes específicas por fonte (`dicas_por_prefixo`), idioma (`prefixos_ingles`), ordem de modelos Gemini e filtros de ligas/clubes |
 | `.env` | Chaves de API (`GEMINI_API_KEY`, `ALT_*`, `PERPLEXITY_API_KEY`), `IA_PADRAO`, retentativas (`MAX_RODADAS`, `BACKOFF_*`), tamanho máximo por chamada (`MAX_CHARS_POR_CHAMADA`), verificação web (`VERIFICAR_FONTES_WEB`), workers paralelos (`MAX_WORKERS`), IDs de pasta do Drive, label do Gmail |
 | `espelho_magico/prompts/` | Diretrizes de extração literal, tratamento de imagens/tabelas/quizzes para áudio e modo unificação |
+| `prompts_notebooklm/` | Prompts universais prontos para copiar e colar no Google NotebookLM (Português e Inglês) |
 
 ## 📁 Estrutura
 
@@ -70,6 +71,7 @@ espelho_magico/
 ├── futebol.py             # placares ESPN com validação e controle de datas
 ├── pipeline.py            # agrupamento, extração, deduplicação e sanitização final
 └── prompts/               # templates de prompts para o Gemini
+prompts_notebooklm/        # prompts otimizados para geração de áudio no NotebookLM
 tests/                     # suíte completa de testes unitários (pytest)
 ```
 
