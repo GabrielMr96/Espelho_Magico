@@ -19,3 +19,4 @@ Graças a isso, **você não precisa editar o nome do programa nem o número da 
 | :--- | :--- |
 | [`podcast_pt_br_universal.md`](./podcast_pt_br_universal.md) | **Todos os programas em Português:**<br>• *Boletim Fora de Ordem*<br>• *Fechamento de Caixa*<br>• *Diagnóstico Sincero*<br>• *Gol Contra*<br>• *Ata de Reunião*<br>• *Alucinação Sintética*<br>• *Hackeando o Problema*<br>• *Pipoca Vencida*<br>• *Controle Quebrado* |
 | [`podcast_en_the_out_of_order_dispatch.md`](./podcast_en_the_out_of_order_dispatch.md) | **Programa em Inglês:**<br>• *The Out of Order Dispatch* |
+

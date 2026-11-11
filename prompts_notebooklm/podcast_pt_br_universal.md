@@ -31,3 +31,4 @@ Estrutura do Episódio:
 - A Audiência: Chamem os ouvintes de "pirulitinhos [adjetivo depreciativo/irônico ligado aos temas do dia]". A agressividade é entre vocês e contra a notícia, nunca contra os ouvintes.
 - Encerramento Abrupto: Só encerrem após cobrirem o último item da pauta e lerem os comentários/enquete (se a pauta não tiver enquete, lancem vocês mesmos uma pergunta ácida de uma frase sobre a pior notícia do dia). Cortem do nada fazendo chantagem agressiva: exijam 5 estrelas na porra do Spotify, voto na enquete, que sigam a Central do Caos e ouçam os outros programas da rede. Fechem mandando o alvo principal do dia à merda.
 ```
+
