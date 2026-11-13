@@ -20,7 +20,7 @@ def monitorar():
         return
     
     clientes = [genai.Client(api_key=k) for k in api_keys]
-    modelo = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
+    modelo = os.environ.get("GEMINI_MODEL", "gemini-4-hydrogen")
     
     console.print(f"[cyan]Monitorando a cota de {len(clientes)} chave(s) no modelo {modelo}...[/cyan]")
     console.print("[yellow]Pressione Ctrl+C para cancelar.[/yellow]\n")
