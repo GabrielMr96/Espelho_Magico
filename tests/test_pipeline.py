@@ -2,6 +2,7 @@ import datetime
 
 from espelho_magico.drive_client import montar_query
 from espelho_magico.pipeline import (
+    ConfigGrupo,
     Opcoes,
     Pipeline,
     agrupar_emails,
@@ -297,6 +298,50 @@ def test_aplicar_cabecalho_edicao_e_compatibilidade_com_data(tmp_path):
     # Continua sendo lido normalmente por ultima_data_extraida_local
     (tmp_path / "Controle Quebrado #274.md").write_text(com_cabecalho, encoding="utf-8")
     assert ultima_data_extraida_local(tmp_path, "Controle Quebrado") == datetime.date(2026, 11, 10)
+
+
+def test_pipeline_executar_com_dupla_verificacao(tmp_path):
+    class ExtratorFalso:
+        def __init__(self):
+            self.chamadas = 0
+
+        def extrair(self, conteudo, prompt):
+            self.chamadas += 1
+            if self.chamadas == 1:
+                return (
+                    "# 13 de novembro de 2026\n\n"
+                    "## Mercado em alta\n\n"
+                    "| Ativo | Valor |\n| --- | --- |\n| Ibovespa | 172.000 |\n\n"
+                    + ("Texto completo da notícia para passar do mínimo exigido pela validação. " * 6)
+                )
+            return "## Enquete do Dia\n\nQuem leva o troféu?\n\n- A\n- B\n- C\n- D"
+
+    extrator = ExtratorFalso()
+    pipe = Pipeline(Opcoes(dry_run=True, max_workers=1), extrator=extrator, drive_service=None, gmail_service=None)
+    pipe.pasta_saida = tmp_path
+    cfg = ConfigGrupo(
+        chave="tns money",
+        emails=[{
+            "id": None,
+            "assunto": "tns money: teste",
+            "remetente": "tns money",
+            "data": "Fri, 13 Nov 2026 09:00:00 +0000",
+            "conteudo_html": "<p>Ibovespa em 172.000 pontos hoje com texto completo da notícia.</p>",
+            "eh_html": True,
+        }],
+        titulo_base="Fechamento de Caixa",
+        nome_final="Fechamento de Caixa #170.md",
+    )
+    resultados = pipe.executar([cfg])
+    assert len(resultados) == 1
+    assert resultados[0].status == "dry"
+    assert resultados[0].noticias == 1
+    gerado = (tmp_path / "Fechamento de Caixa #170.md").read_text(encoding="utf-8")
+    assert gerado.startswith("# Fechamento de Caixa #170 — 13 de novembro de 2026")
+    assert "- **Ibovespa:** Valor: 172.000" in gerado
+    assert "## Enquete do Dia" in gerado and "- A" in gerado
+    assert "|" not in gerado
+
 
 
 

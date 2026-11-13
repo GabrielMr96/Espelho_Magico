@@ -12,8 +12,10 @@ from pathlib import Path
 
 import requests
 from bs4 import BeautifulSoup
+from rich import box
 from rich.panel import Panel
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn, TimeElapsedColumn
+from rich.table import Table
 
 from . import config, futebol
 from .drive_client import upload_para_drive
@@ -26,10 +28,21 @@ from .llm import (
     unir_partes_extraidas,
     verificar_completude,
 )
-from .log import console, escape, logger
+from .log import console, contexto_grupo, escape, log_arquivo, logger
+from .validacao import aplicar_dupla_verificacao, contar_noticias, renderizar_relatorio
 
 SEPARADOR = "\n\n---\n\n"
 MINIMO_CARACTERES_EDICAO = 250
+ETAPAS_GRUPO = 5  # pré-limpeza/IA · dupla verificação · salvar · Drive/Gmail · concluído
+
+_INSTRUCAO_PARTE = (
+    "<modo_parte>\n"
+    "Este conteúdo é a PARTE {i} de {n} de uma mesma edição, fatiada por tamanho para caber no limite da IA. "
+    "Extraia normalmente TODAS as notícias desta parte seguindo as regras acima, mas NÃO invente "
+    "`## Enquete do Dia` / `## Daily Poll`: inclua enquete apenas se ela existir de fato nesta parte da fonte "
+    "(a enquete final é garantida depois, na dupla verificação).\n"
+    "</modo_parte>"
+)
 
 _MESES_PT = (
     "", "janeiro", "fevereiro", "março", "abril", "maio", "junho",
@@ -73,6 +86,21 @@ class ConfigGrupo:
     titulo_base: str
     nome_final: str
     unificar: bool = False
+
+
+@dataclass
+class ResultadoGrupo:
+    nome: str
+    status: str  # "ok" | "parcial" | "erro" | "ignorado" | "dry"
+    mensagem: str
+    resumo: str = ""
+    segundos: float = 0.0
+    noticias: int = 0
+    verificacao: str = ""
+    tem_aviso: bool = False
+
+    def __str__(self):
+        return self.mensagem
 
 
 # --- Funções puras (testáveis) ------------------------------------------------
@@ -668,6 +696,23 @@ class Pipeline:
         self.pasta_saida = config.DRY_RUN_DIR if opcoes.dry_run else config.RESULTADOS_DIR
         self._lock_pendentes = threading.Lock()
         self._nao_iniciados = 0
+        self._progress = None
+        self._tarefas = {}
+
+    # -- painel de progresso por programa --
+    def _etapa(self, cfg, texto, passo=None):
+        """Atualiza a linha do programa no painel de progresso (ex.: '🤖 IA · parte 2/3')."""
+        if not self._progress or cfg is None:
+            return
+        tarefa = self._tarefas.get(cfg.nome_final)
+        if tarefa is None:
+            return
+        dados = {"description": f"[bold]{escape(Path(cfg.nome_final).stem)}[/bold] [dim]·[/dim] {texto}"}
+        if passo is not None:
+            dados["completed"] = passo
+        self._progress.update(tarefa, **dados)
+        if passo is not None and passo >= ETAPAS_GRUPO:
+            self._progress.stop_task(tarefa)
 
     # -- etapa interativa (sequencial) --
     def _perguntar(self, mensagem):
@@ -734,7 +779,7 @@ class Pipeline:
             conteudo = limpar_linhas(bruto)
         if conteudo is not bruto and len(bruto):
             reducao = 100 - (len(conteudo) * 100 // len(bruto))
-            logger.info(f"[dim]  ✂ Pré-limpeza: {len(bruto):,} → {len(conteudo):,} caracteres (-{reducao}%)[/dim]")
+            logger.info(f"[dim]✂ Pré-limpeza: {len(bruto):,} → {len(conteudo):,} caracteres (-{reducao}%)[/dim]")
 
         data_fmt = formatar_data_email(email_item.get("data", ""), idioma=idioma)
         assunto = email_item.get("assunto", "")
@@ -757,18 +802,20 @@ class Pipeline:
             return f"{bloco_meta}\n\n{corpo_final}"
         return corpo_final
 
-    def _extrair(self, conteudo, prompt, rotulo):
+    def _extrair(self, conteudo, prompt, rotulo, cfg=None):
         partes = dividir_conteudo_com_metadados(conteudo, max_chars=config.MAX_CHARS_POR_CHAMADA)
         if len(partes) > 1:
             logger.info(
-                f"[cyan]➜ Conteúdo extenso para '{escape(rotulo)}' ({len(conteudo):,} chars): "
-                f"dividido em {len(partes)} partes (~{len(conteudo) // len(partes):,} chars/parte) "
-                f"para evitar timeout (504) e limite de tokens (413)...[/cyan]"
+                f"[cyan]✂ Conteúdo extenso ({len(conteudo):,} caracteres): dividido em {len(partes)} partes "
+                f"(~{len(conteudo) // len(partes):,} cada) para evitar timeout (504) e limite de tokens (413)[/cyan]"
             )
             extraidas = []
             for idx, parte in enumerate(partes, 1):
                 rotulo_parte = f"{rotulo} [parte {idx}/{len(partes)}]"
-                texto_parte = self._extrair_unico(parte, prompt, rotulo_parte)
+                self._etapa(cfg, f"🤖 extraindo com IA · parte {idx}/{len(partes)}")
+                logger.info(f"[cyan]🤖 Parte {idx}/{len(partes)} → IA[/cyan]")
+                prompt_parte = f"{prompt}\n\n{_INSTRUCAO_PARTE.format(i=idx, n=len(partes))}"
+                texto_parte = self._extrair_unico(parte, prompt_parte, rotulo_parte)
                 if not texto_parte:
                     return None
                 extraidas.append(texto_parte)
@@ -799,7 +846,8 @@ class Pipeline:
         with self._lock_pendentes:
             self._nao_iniciados -= 1
         try:
-            return self._processar_grupo(cfg)
+            with contexto_grupo(Path(cfg.nome_final).stem):
+                return self._processar_grupo(cfg)
         finally:
             with self._lock_pendentes:
                 ha_mais = self._nao_iniciados > 0
@@ -808,66 +856,112 @@ class Pipeline:
                 time.sleep(config.PAUSA_ENTRE_GRUPOS)
 
     def _processar_grupo(self, cfg):
-        logger.info(f"\n[bold blue]Processando para gerar: {escape(cfg.nome_final)}[/bold blue]")
+        inicio = time.time()
+        nome = Path(cfg.nome_final).stem
+        n_emails = len(cfg.emails)
+        logger.info(
+            f"\n[bold blue]▶ Iniciando {escape(cfg.nome_final)}[/bold blue] "
+            f"[dim]({n_emails} e-mail(s){' · unificados' if cfg.unificar else ''})[/dim]"
+        )
+        self._etapa(cfg, "✂ pré-limpeza do HTML", 0)
 
         resultados_futebol, data_futebol = "", None
         if cfg.chave == config.PREFIXO_FUTEBOL:
+            self._etapa(cfg, "⚽ buscando placares na ESPN")
             resultados_futebol, data_futebol = futebol.coletar_resultados()
 
         idioma = "en" if (cfg.chave or "").lower() in config.PREFIXOS_INGLES else "pt"
-        textos, emails_ok = [], []
+        textos, emails_ok, entradas = [], [], []
         if cfg.unificar:
             partes_edicoes = "".join(
                 f"\n\n--- INÍCIO DA EDIÇÃO {i + 1} ---\n\n{self._preparar(e, idioma=idioma, envolver_documento=False)}"
                 for i, e in enumerate(cfg.emails)
             ).strip()
             combinado = f"<documento_entrada>\n{partes_edicoes}\n</documento_entrada>"
-            logger.info(f"[cyan]➜ Enviando {len(cfg.emails)} e-mails agrupados para extração unificada ({escape(cfg.titulo_base)})...[/cyan]")
+            entradas.append(combinado)
+            logger.info(f"[cyan]🤖 Enviando {n_emails} e-mails agrupados para extração unificada...[/cyan]")
+            self._etapa(cfg, "🤖 extraindo com IA (unificado)", 1)
             prompt_grupo = self._montar_prompt(cfg.chave, unificar=True)
-            texto = self._extrair(combinado, prompt_grupo, cfg.titulo_base)
+            texto = self._extrair(combinado, prompt_grupo, cfg.titulo_base, cfg)
             if texto:
                 textos.append(texto)
                 emails_ok.extend(cfg.emails)
         else:
             prompt_grupo = self._montar_prompt(cfg.chave, unificar=False)
             for i, email_item in enumerate(cfg.emails):
-                texto = self._extrair(self._preparar(email_item, idioma=idioma), prompt_grupo, email_item["assunto"])
+                conteudo = self._preparar(email_item, idioma=idioma)
+                entradas.append(conteudo)
+                sufixo = f" · e-mail {i + 1}/{n_emails}" if n_emails > 1 else ""
+                self._etapa(cfg, f"🤖 extraindo com IA{sufixo}", 1)
+                texto = self._extrair(conteudo, prompt_grupo, email_item["assunto"], cfg)
                 if texto:
                     textos.append(texto)
                     emails_ok.append(email_item)
-                if i < len(cfg.emails) - 1:
+                if i < n_emails - 1:
                     time.sleep(2)
 
         if not textos:
             logger.error(f"[bold red]✖ Falha ao gerar texto para {escape(cfg.nome_final)}[/bold red]")
-            return f"❌ Erro ao gerar {cfg.nome_final}"
+            self._etapa(cfg, "[red]✖ falha na IA[/red]", ETAPAS_GRUPO)
+            return ResultadoGrupo(nome, "erro", f"❌ Erro ao gerar {cfg.nome_final}", "Falha na IA (e-mails continuam não lidos)",
+                                  time.time() - inicio)
 
         corpo_editorial = sanitizar_markdown_final(SEPARADOR.join(textos))
         if eh_extracao_vazia_ou_invalida(corpo_editorial):
             logger.warning(
-                f"[bold yellow]⚠ E-mail(s) de '{escape(cfg.titulo_base)}' sem conteúdo editorial válido "
-                f"({len(corpo_editorial)} chars). Edição {escape(cfg.nome_final)} descartada para não gerar arquivo vazio.[/bold yellow]"
+                f"[bold yellow]⚠ E-mail(s) sem conteúdo editorial válido ({len(corpo_editorial)} caracteres). "
+                f"Edição descartada para não gerar arquivo vazio.[/bold yellow]"
             )
             if not self.opcoes.dry_run and self.gmail:
                 for email_item in emails_ok:
                     if email_item.get("id"):
                         marcar_como_lido(self.gmail, email_item["id"])
-            return f"⏭️ {cfg.nome_final} ignorado (e-mail promocional/administrativo sem notícias)"
+            self._etapa(cfg, "[yellow]⏭ ignorado (sem notícias)[/yellow]", ETAPAS_GRUPO)
+            return ResultadoGrupo(nome, "ignorado", f"⏭️ {cfg.nome_final} ignorado (e-mail promocional/administrativo sem notícias)",
+                                  "Ignorado: e-mail sem notícias", time.time() - inicio)
 
         if resultados_futebol:
             final = sanitizar_markdown_final(inserir_apos_h1(corpo_editorial, resultados_futebol))
         else:
             final = corpo_editorial
-        final = aplicar_cabecalho_edicao(final, cfg.nome_final)
 
+        # Dupla verificação das regras de extração (corrige o que é seguro e relata o resto)
+        self._etapa(cfg, "🔎 dupla verificação das regras", 2)
+        logger.info("[cyan]🔎 Dupla verificação: conferindo estrutura, integridade, idioma e enquete...[/cyan]")
+
+        def gerar_enquete(conteudo, prompt):
+            logger.info("[cyan]🗳 Fonte sem Enquete do Dia: pedindo à IA uma enquete sobre a pauta...[/cyan]")
+            self._etapa(cfg, "🗳 criando Enquete do Dia com IA")
+            return self.extrator.extrair(conteudo, prompt)
+
+        def reparar_com_ia(conteudo, prompt):
+            logger.info("[cyan]🔧 Dupla verificação: corrigindo desvios automaticamente com IA...[/cyan]")
+            self._etapa(cfg, "🔧 corrigindo desvios com IA")
+            return self.extrator.extrair(conteudo, prompt)
+
+        final, relatorio = aplicar_dupla_verificacao(
+            final, "\n\n".join(entradas), idioma,
+            gerar=gerar_enquete if self.extrator else None,
+            extrair_data=extrair_data_de_texto,
+            reparar=reparar_com_ia if self.extrator else None,
+        )
+        final = aplicar_cabecalho_edicao(final, cfg.nome_final)
+        console.print(renderizar_relatorio(relatorio, nome))
+        log_arquivo.info(f"Dupla verificação · {nome} · {relatorio.resumo}\n{relatorio.como_texto()}")
+        noticias = contar_noticias(final)
+
+        self._etapa(cfg, "💾 salvando Markdown", 3)
         self.pasta_saida.mkdir(parents=True, exist_ok=True)
         caminho = self.pasta_saida / cfg.nome_final
         caminho.write_text(final + "\n", encoding="utf-8")
-        logger.info(f"[bold green]✔[/bold green] Salvo: [bold]{escape(str(caminho))}[/bold]")
+        logger.info(f"[bold green]💾 Salvo:[/bold green] [bold]{escape(str(caminho))}[/bold] [dim]({len(final):,} caracteres)[/dim]")
 
+        base = dict(segundos=0.0, noticias=noticias, verificacao=relatorio.resumo, tem_aviso=relatorio.tem_aviso)
         if self.opcoes.dry_run:
-            logger.info("[dim]  (dry-run: sem upload, sem marcar e-mails e sem atualizar controle do futebol)[/dim]")
-            return f"🧪 {cfg.nome_final} gerado em modo dry-run"
+            logger.info("[dim]🧪 Dry-run: sem upload, sem marcar e-mails e sem atualizar controle do futebol[/dim]")
+            self._etapa(cfg, "[green]✔ concluído (dry-run)[/green]", ETAPAS_GRUPO)
+            base["segundos"] = time.time() - inicio
+            return ResultadoGrupo(nome, "dry", f"🧪 {cfg.nome_final} gerado em modo dry-run", "Gerado (dry-run, sem Drive)", **base)
 
         if data_futebol:
             try:
@@ -875,6 +969,7 @@ class Pipeline:
             except Exception as e:
                 logger.warning(f"[yellow]⚠ Erro ao salvar controle do futebol: {escape(str(e))}[/yellow]")
 
+        self._etapa(cfg, "☁ enviando ao Drive e marcando e-mails", 4)
         if self.drive:
             upload_para_drive(self.drive, caminho, cfg.nome_final)
         if self.gmail:
@@ -882,22 +977,34 @@ class Pipeline:
                 if email_item.get("id"):
                     marcar_como_lido(self.gmail, email_item["id"])
 
-        parcial = len(emails_ok) < len(cfg.emails)
-        sufixo = f" ({len(emails_ok)}/{len(cfg.emails)} e-mails; os demais continuam não lidos)" if parcial else ""
-        return f"{'⚠️' if parcial else '✅'} {cfg.nome_final} gerado com sucesso!{sufixo}"
+        self._etapa(cfg, "[green]✔ concluído[/green]", ETAPAS_GRUPO)
+        base["segundos"] = time.time() - inicio
+        parcial = len(emails_ok) < n_emails
+        if parcial:
+            sufixo = f" ({len(emails_ok)}/{n_emails} e-mails; os demais continuam não lidos)"
+            return ResultadoGrupo(nome, "parcial", f"⚠️ {cfg.nome_final} gerado com sucesso!{sufixo}",
+                                  f"Gerado com {len(emails_ok)}/{n_emails} e-mails", **base)
+        return ResultadoGrupo(nome, "ok", f"✅ {cfg.nome_final} gerado com sucesso!",
+                              "Gerado e enviado ao Drive" if self.drive else "Gerado", **base)
 
     # -- execução paralela --
     def executar(self, configs):
         workers = max(1, min(self.opcoes.max_workers or config.MAX_WORKERS, len(configs)))
         self._nao_iniciados = len(configs)
-        logger.info(f"\n[bold green]Iniciando processamento de {len(configs)} grupo(s) com {workers} worker(s)...[/bold green]\n")
+        console.rule(f"[bold cyan]④ Extração com IA · {len(configs)} programa(s) · {workers} em paralelo[/bold cyan]")
 
         resultados = []
         with Progress(
-            SpinnerColumn(), TextColumn("[progress.description]{task.description}"), BarColumn(),
+            SpinnerColumn(), TextColumn("{task.description}"), BarColumn(bar_width=18),
             TaskProgressColumn(), TimeElapsedColumn(), console=console,
         ) as progress:
-            tarefa = progress.add_task("[cyan]Extraindo com IA...", total=len(configs))
+            self._progress = progress
+            self._tarefas = {
+                cfg.nome_final: progress.add_task(
+                    f"[bold]{escape(Path(cfg.nome_final).stem)}[/bold] [dim]· ⏳ na fila[/dim]", total=ETAPAS_GRUPO
+                )
+                for cfg in configs
+            }
             with concurrent.futures.ThreadPoolExecutor(max_workers=workers, thread_name_prefix="grupo") as executor:
                 futuros = {executor.submit(self.processar_grupo, cfg): cfg for cfg in configs}
                 for futuro in concurrent.futures.as_completed(futuros):
@@ -906,18 +1013,90 @@ class Pipeline:
                         resultados.append(futuro.result())
                     except Exception as e:
                         logger.exception(f"Erro crítico no grupo {cfg.titulo_base}")
-                        resultados.append(f"❌ Erro crítico no grupo {cfg.titulo_base}: {e}")
-                    progress.advance(tarefa)
+                        self._etapa(cfg, "[red]✖ erro crítico[/red]", ETAPAS_GRUPO)
+                        resultados.append(ResultadoGrupo(
+                            Path(cfg.nome_final).stem, "erro", f"❌ Erro crítico no grupo {cfg.titulo_base}: {e}",
+                            f"Erro crítico: {e}",
+                        ))
+            self._progress = None
         return resultados
+
+
+# --- Apresentação no terminal ---------------------------------------------------
+
+_ICONE_STATUS = {"ok": "✅", "parcial": "⚠️", "erro": "❌", "ignorado": "⏭️", "dry": "🧪"}
+
+
+def _painel_configuracao(opcoes):
+    grade = Table.grid(padding=(0, 2))
+    grade.add_column(style="bold cyan", no_wrap=True)
+    grade.add_column()
+    web = not opcoes.urls and opcoes.verificar_web and config.VERIFICAR_FONTES_WEB
+    origem = "URL(s) informada(s)" if opcoes.urls else "Gmail (e-mails não lidos)"
+    grade.add_row("📥 Origem", origem + (" + fallback nos sites oficiais" if web else ""))
+    ia = (opcoes.ia or config.IA_PADRAO).lower()
+    grade.add_row("🤖 IA principal", ia)
+    if ia != "perplexity":
+        grade.add_row("🧠 Modelos (ordem)", " → ".join(config.GEMINI_MODELS))
+        grade.add_row("🔑 Chaves Gemini", f"{len(config.GEMINI_API_KEYS)} (rotação automática em caso de cota 429)")
+    grade.add_row("⚙  Paralelismo", f"até {opcoes.max_workers or config.MAX_WORKERS} programa(s) ao mesmo tempo")
+    grade.add_row("✂  Fatiamento", f"partes de até {config.MAX_CHARS_POR_CHAMADA:,} caracteres (anti-504/413)")
+    grade.add_row("🔎 Dupla verificação", "estrutura · integridade dos números · tabelas · idioma · enquete")
+    pasta = config.DRY_RUN_DIR if opcoes.dry_run else config.RESULTADOS_DIR
+    destino = str(pasta) + ("  [yellow](dry-run: sem Drive e sem marcar e-mails)[/yellow]" if opcoes.dry_run else "  + Google Drive")
+    grade.add_row("💾 Saída", destino)
+    if opcoes.grupos:
+        grade.add_row("🎯 Filtro", ", ".join(opcoes.grupos))
+    titulo = "✨ Espelho Mágico" + (" [yellow][DRY-RUN][/yellow]" if opcoes.dry_run else "")
+    return Panel(grade, title=titulo, title_align="left", border_style="cyan", expand=False)
+
+
+def _tabela_plano(configs):
+    tabela = Table(title="🗂  Programas a processar", title_justify="left", title_style="bold",
+                   box=box.SIMPLE_HEAVY, expand=False)
+    tabela.add_column("#", justify="right", style="dim")
+    tabela.add_column("Programa", style="bold")
+    tabela.add_column("Fonte")
+    tabela.add_column("Itens", justify="center")
+    tabela.add_column("Modo")
+    tabela.add_column("Idioma", justify="center")
+    for i, cfg in enumerate(configs, 1):
+        da_web = any(not e.get("id") for e in cfg.emails)
+        fonte = "🌐 site oficial" if da_web else "📧 Gmail"
+        modo = "unificado" if cfg.unificar else ("separado" if len(cfg.emails) > 1 else "único")
+        idioma = "🇬🇧 EN" if (cfg.chave or "").lower() in config.PREFIXOS_INGLES else "🇧🇷 PT"
+        tabela.add_row(str(i), escape(Path(cfg.nome_final).stem), fonte, str(len(cfg.emails)), modo, idioma)
+    return tabela
+
+
+def _tabela_resumo(resultados, total_segundos):
+    tabela = Table(title="📊 Resumo do processamento", title_justify="left", title_style="bold cyan",
+                   box=box.ROUNDED, expand=False)
+    tabela.add_column("", justify="center")
+    tabela.add_column("Programa", style="bold")
+    tabela.add_column("Notícias", justify="center")
+    tabela.add_column("Dupla verificação")
+    tabela.add_column("Tempo", justify="right")
+    tabela.add_column("Resultado")
+    for r in sorted(resultados, key=lambda x: x.nome):
+        verif = r.verificacao or "—"
+        if r.verificacao:
+            verif = f"[yellow]{verif}[/yellow]" if r.tem_aviso else f"[green]{verif}[/green]"
+        cor = {"ok": "green", "dry": "green", "parcial": "yellow", "ignorado": "yellow", "erro": "red"}.get(r.status, "white")
+        tempo = f"{int(r.segundos // 60)}m{int(r.segundos % 60):02d}s" if r.segundos else "—"
+        tabela.add_row(
+            _ICONE_STATUS.get(r.status, "•"), escape(r.nome), str(r.noticias) if r.noticias else "—",
+            verif, tempo, f"[{cor}]{escape(r.resumo or r.mensagem)}[/{cor}]",
+        )
+    tabela.caption = f"⏱ Tempo total: {int(total_segundos // 60)}min {int(total_segundos % 60)}s"
+    tabela.caption_justify = "left"
+    return tabela
 
 
 def executar(opcoes):
     inicio = time.time()
-    modo = "Modo URL" if opcoes.urls else "Modo E-mail"
-    titulo = f"Iniciando Extração com Espelho Mágico ✨ ({modo})"
-    if opcoes.dry_run:
-        titulo += " [DRY-RUN]"
-    console.print(Panel.fit(f"[bold cyan]{escape(titulo)}[/bold cyan]"))
+    console.print()
+    console.print(_painel_configuracao(opcoes))
 
     if not config.GEMINI_API_KEYS and config.IA_PADRAO != "perplexity":
         logger.error("[bold red]Erro:[/bold red] Nenhuma GEMINI_API_KEY encontrada no .env.")
@@ -932,6 +1111,7 @@ def executar(opcoes):
             return 1
 
     if opcoes.urls:
+        console.rule("[bold cyan]① Coleta · baixando edição(ões) pela URL[/bold cyan]")
         emails = []
         for u in opcoes.urls:
             try:
@@ -940,10 +1120,15 @@ def executar(opcoes):
                 logger.error(f"[bold red]Falha ao baixar URL '{escape(u)}': {escape(str(e))}[/bold red]")
                 return 1
     else:
+        console.rule("[bold cyan]① Coleta · e-mails não lidos no Gmail[/bold cyan]")
         emails = buscar_emails(gmail_service)
+        logger.info(f"[bold]📬 {len(emails)} e-mail(s) não lido(s) encontrado(s)[/bold]")
         if opcoes.verificar_web and config.VERIFICAR_FONTES_WEB:
+            console.rule("[bold cyan]② Dupla verificação nos sites oficiais · edições que não chegaram por e-mail[/bold cyan]")
             emails.extend(buscar_edicoes_faltantes_na_web(emails, config.RESULTADOS_DIR, opcoes.grupos))
     if not emails:
+        console.print(Panel("[yellow]Nada para processar agora: nenhum e-mail novo e todas as fontes em dia.[/yellow]",
+                            border_style="yellow", expand=False))
         return 0
 
     try:
@@ -952,19 +1137,23 @@ def executar(opcoes):
         logger.error(f"[bold red]Erro de configuração da IA:[/bold red] {escape(str(e))}")
         return 1
     pipeline = Pipeline(opcoes, extrator, drive_service, gmail_service)
+    console.rule("[bold cyan]③ Planejamento · agrupando por programa e numerando edições[/bold cyan]")
     configs = pipeline.preparar_grupos(emails)
     if not configs:
         logger.info("[yellow]Nenhum grupo corresponde aos filtros informados.[/yellow]")
         return 0
+    console.print()
+    console.print(_tabela_plano(configs))
 
     resultados = pipeline.executar(configs)
 
     total = time.time() - inicio
-    console.print("\n[bold cyan]Resumo do Processamento:[/bold cyan]")
-    for r in resultados:
-        console.print(escape(r))
-    logger.info(f"\n[bold cyan]⏱ Tempo total: {int(total // 60)}min {int(total % 60)}s[/bold cyan]")
-    return 0 if all(not r.startswith("❌") for r in resultados) else 2
+    console.rule("[bold cyan]⑤ Resumo[/bold cyan]")
+    console.print(_tabela_resumo(resultados, total))
+    log_arquivo.info("Resumo: " + " | ".join(r.mensagem for r in resultados) + f" | tempo total {total:.0f}s")
+    if any(r.tem_aviso for r in resultados):
+        console.print("[yellow]⚠ Há avisos na dupla verificação: vale abrir o(s) arquivo(s) marcados em amarelo antes de gerar o podcast.[/yellow]")
+    return 0 if all(r.status != "erro" for r in resultados) else 2
 
 
 def interativo_disponivel():

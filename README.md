@@ -11,14 +11,13 @@ Automação que lê newsletters do Gmail (marcador `Espelho_Magico`), arranca o 
 2. **Agrupamento Inteligente**: Agrupa mensagens por newsletter (mapeamento em `config.json`), detecta o histórico e calcula a numeração da próxima edição automaticamente.
 3. **Pré-limpeza HTML → Markdown**: Converte tabelas de layout para blocos enxutos, preserva linhas de tabelas de dados (cotações/mercados), remove menus/rodapés web (`<nav>`, `<footer>`, `<aside>`), blocos de "Leia mais sobre..." e créditos fotográficos puros (`Manoella Mello | Globo`, `Fortune | Getty Images`), economizando até 90% dos tokens antes do envio à IA.
 4. **Extração Literal com IA (Fatiamento Anti-504 e Anti-413)**:
-   - Extrai o conteúdo sem resumir ou parafrasear usando o Gemini (`gemini-3.8-flash` como prioridade, com rotação de chaves e fallback para provedor alternativo `ALT_*` ou Perplexity com busca web desativada).
+   - Extrai o conteúdo sem resumir ou parafrasear usando o Gemini (`gemini-4-hydrogen` como prioridade no tier gratuito, com rotação de chaves e fallback para provedor alternativo `ALT_*` ou Perplexity com busca web desativada).
    - Entradas extensas (como unificações de múltiplos e-mails) são fatiadas preventivamente por fronteiras de seção (`MAX_CHARS_POR_CHAMADA`) e contam com auto-divisão binária reativa em caso de `504` (timeout) ou `413` (limite de TPM), mantendo o modelo principal sem downgrade.
 5. **Placares Esportivos**: No *Gol Contra*, injeta automaticamente os placares do dia anterior via API pública da ESPN logo abaixo do cabeçalho `# Data`, filtrando por ligas de elite e clubes de destaque.
-6. **Sanitização para NotebookLM (Áudio/Podcast)**:
-   - Garante **rigorosamente 1 único cabeçalho `#`** na linha 1 de cada arquivo (com a data da edição, em português ou 100% em inglês para programas em `prefixos_ingles`);
-   - Remove cercas ```` ```markdown ```` externas e pontuações terminais (`?`, `!`, `.`, `:`) dos títulos `##` para capítulos perfeitos;
-   - Elimina resíduos visuais como `(Aprofunde)` e links quebrados de redes sociais;
-   - Deduplica seções repetidas por escopo (subtítulos `###` só deduplicam dentro do mesmo `##` pai).
+6. **Dupla Verificação e Formatação para NotebookLM (Áudio/Podcast)**:
+   - Valida 10 regras pós-extração com relatório visual por programa: cabeçalho `# Programa #Edição — Data`, contagem de notícias, integridade dos números da fonte, conversão automática de tabelas cruas para tópicos narrativos de áudio, remoção de links/imagens crus, ausência de ruído/paywall, consistência de idioma e adaptação de *leitores* → *ouvintes*;
+   - Reordena o bloco final para sempre terminar em `## Voz dos Ouvintes` (quando houver) e `## Enquete do Dia` / `## Daily Poll` (criada automaticamente pela IA quando a fonte não tiver enquete);
+   - Remove cercas ```` ```markdown ```` externas, pontuações terminais (`?`, `!`, `.`, `:`) dos títulos `##` e deduplica seções repetidas por escopo.
 7. **Publicação**: Salva em `resultados_markdown/`, envia/atualiza no Google Drive e marca os e-mails como lidos no Gmail.
 
 ## 🚀 Como rodar
@@ -69,7 +68,8 @@ espelho_magico/
 ├── html_cleaner.py        # pré-limpeza HTML → Markdown e filtro de créditos
 ├── llm.py                 # rotação de chaves e fallback Gemini / Perplexity
 ├── futebol.py             # placares ESPN com validação e controle de datas
-├── pipeline.py            # agrupamento, extração, deduplicação e sanitização final
+├── pipeline.py            # agrupamento, extração, painel visual e publicação
+├── validacao.py           # dupla verificação das regras e adaptação para podcast
 └── prompts/               # templates de prompts para o Gemini
 prompts_notebooklm/        # prompts otimizados para geração de áudio no NotebookLM
 tests/                     # suíte completa de testes unitários (pytest)

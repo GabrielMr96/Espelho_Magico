@@ -12,6 +12,7 @@ Aplique todas as regras anteriores em conjunto com estas diretrizes estritas:
    - MESMO EVENTO EM DOIS E-MAILS: se duas edições cobrirem o mesmo acontecimento (ex.: um plantão seguido de atualização ou duas coberturas da mesma notícia), unifique-as sob um único título `##`, preservando 100% dos parágrafos, citações e dados exclusivos de cada versão e eliminando apenas frases repetidas que digam exatamente a mesma coisa. Nunca resuma a fusão!
    - MÚLTIPLAS NOTAS DE PORTAIS SOBRE O MESMO FILME, JOGO OU SÉRIE: se o lote trouxer matérias diferentes sobre a mesma obra (ex.: declarações ou novidades distintas sobre o mesmo jogo ou filme), mantenha integralmente todo o conteúdo inédito e declarações de cada matéria, mas REMOVA nas matérias subsequentes parágrafos finais de ficha técnica/SEO que sejam mera repetição de informações já dadas em matéria anterior deste mesmo arquivo (como data de estreia, plataformas disponíveis, nota idêntica no Metacritic ou lista completa de elenco repetida).
 
-3. CABEÇALHO ÚNICO DE DATA E IDIOMA CONSISTENTE:
+3. CABEÇALHO ÚNICO DE DATA, IDIOMA CONSISTENTE E ENQUETE ÚNICA NO FINAL:
    - Gere rigorosamente UM ÚNICO título de nível 1 (`#`) na primeira linha de todo o documento unificado, usando a data mais recente presente em `<metadados>` e respeitando o idioma da newsletter (`# DD de mês de AAAA` em português; `# Month DD, YYYY` em inglês).
-     </modo_unificacao>
+   - Posicione uma única seção `## Enquete do Dia` (ou `## Daily Poll` em inglês) no final absoluto do documento unificado.
+</modo_unificacao>
