@@ -264,6 +264,8 @@ def _inferir_prefixo_de_url(url, html, filtros_grupo, mapeamento):
             return prefixo
 
     html_low = html[:8000].lower()
+    if "thenewscc.beehiiv.com" in url_low and "the news" in mapeamento:
+        return "the news"
     if "the news sports" in html_low and "tns sports" in mapeamento:
         return "tns sports"
     if "aidrops" in url_low and "aidrops" in mapeamento:
@@ -349,45 +351,164 @@ def _verificar_fonte_thenews(chave, titulo_base, arquivo_url, ultima_data, get=r
     return itens
 
 
-def _verificar_fonte_beehiiv(chave, titulo_base, arquivo_url, ultima_data, get=requests.get):
-    """Verifica arquivo Beehiiv (`aidrops.com.br/archive`, `thejobs.com.br/archive`) por edição mais nova."""
+_STOPWORDS_RESUMO = {
+    "sobre", "contra", "entre", "depois", "antes", "ainda", "mesmo", "todos", "todas",
+    "mundo", "brasil", "feira", "quando", "porque", "estão", "foram", "sendo", "pode",
+    "podem", "fazer", "feita", "feito", "disse", "afirma", "segundo", "após", "durante",
+    "melhor", "maior", "menos", "muito", "muita", "outros", "outras", "novo", "nova",
+    "novos", "novas", "principais", "notícias", "desta", "quarta", "quinta", "sexta",
+    "terça", "segunda", "sábado", "domingo", "comprar", "vender", "começa", "parte",
+    "quase",
+}
+
+
+def _texto_edicoes_da_data(pasta, titulo_base, data_alvo):
+    """Lê o texto em minúsculas dos últimos `.md` de `titulo_base` referentes a `data_alvo`."""
+    if not pasta:
+        return ""
+    arquivos = []
+    for arq in Path(pasta).glob(f"{glob_escape(titulo_base)} #*.md"):
+        m = re.search(r"#(\d+)\.md$", arq.name)
+        if m:
+            arquivos.append((int(m.group(1)), arq))
+    arquivos.sort(key=lambda par: par[0], reverse=True)
+    textos = []
+    for _, arq in arquivos[:4]:
+        try:
+            conteudo = arq.read_text(encoding="utf-8", errors="ignore")
+            primeiras = "\n".join(conteudo.splitlines()[:5])
+            if extrair_data_de_texto(primeiras) == data_alvo:
+                textos.append(conteudo.lower())
+        except Exception:
+            continue
+    if textos:
+        return "\n".join(textos)
+    if arquivos:
+        try:
+            return arquivos[0][1].read_text(encoding="utf-8", errors="ignore").lower()
+        except Exception:
+            return ""
+    return ""
+
+
+def _post_ja_extraido_localmente(html_post, texto_local):
+    """Confere por palavras-chave da chamada ('Para hoje…' ou manchetes) se o post já está no `.md` local."""
+    if not texto_local:
+        return False
+    soup = BeautifulSoup(html_post, "html.parser")
+    para_hoje = next(
+        (p.get_text(" ", strip=True) for p in soup.find_all(["p", "div"]) if "Para hoje" in p.get_text() and len(p.get_text()) < 500),
+        "",
+    )
+    if para_hoje:
+        miolo = re.sub(r"^.*?Para hoje[….:\s]+", "", para_hoje)
+        miolo = re.sub(r"(?:Segunda|Terça|Quarta|Quinta|Sexta|Sábado|Domingo)[^;.]*$", "", miolo, flags=re.I)
+        brutos = re.findall(r"[a-záéíóúâêôãõçA-ZÁÉÍÓÚÂÊÔÃÕÇ]{5,}", miolo)
+    else:
+        cabecalhos = [h.get_text(" ", strip=True) for h in soup.find_all(["h1", "h3", "h5"]) if len(h.get_text(strip=True)) > 15]
+        brutos = [w for h in cabecalhos[:5] for w in re.findall(r"[a-záéíóúâêôãõçA-ZÁÉÍÓÚÂÊÔÃÕÇ]{5,}", h)]
+
+    unicos = []
+    for termo in brutos:
+        low = termo.lower()
+        if low not in _STOPWORDS_RESUMO and low not in unicos:
+            unicos.append(low)
+    if not unicos:
+        return False
+    hits = sum(1 for termo in unicos if termo in texto_local)
+    return (hits / len(unicos)) >= 0.6
+
+
+def _agrupar_cards_beehiiv(soup, arquivo_url):
+    """Agrupa links `/p/` por URL canônica juntando os textos de âncoras duplicadas (imagem + título)."""
+    cards = {}
+    for a in soup.find_all("a", href=True):
+        href = a["href"].strip()
+        if "/p/" not in href or "?" in href:
+            continue
+        url_post = urllib.parse.urljoin(arquivo_url, href)
+        texto = a.get_text(" ", strip=True)
+        prev = cards.get(url_post, "")
+        if texto and texto not in prev:
+            cards[url_post] = f"{prev} {texto}".strip() if prev else texto
+        elif url_post not in cards:
+            cards[url_post] = ""
+    return list(cards.items())
+
+
+def _verificar_fonte_beehiiv(
+    chave, titulo_base, arquivo_url, ultima_data, get=requests.get, pasta_resultados=None, emails_atuais_grupo=None
+):
+    """Verifica arquivo Beehiiv (`thenewscc.beehiiv.com/archive`, `aidrops.com.br/archive`, `thejobs.com.br/archive`)."""
     resp = get(arquivo_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
     resp.raise_for_status()
     soup = BeautifulSoup(resp.text, "html.parser")
+    cards = _agrupar_cards_beehiiv(soup, arquivo_url)
+    if not cards:
+        return []
 
-    link = next((a for a in soup.find_all("a", href=True) if "/p/" in a["href"]), None)
-    if not link:
-        return []
-    url_post = urllib.parse.urljoin(arquivo_url, link["href"].strip())
-    dt_card = extrair_data_de_texto(link.get_text(" ", strip=True))
-    if dt_card is not None:
-        if ultima_data and dt_card <= ultima_data:
-            return []
-        if not ultima_data and (datetime.date.today() - dt_card).days > 2:
-            return []
-        logger.info(
-            f"[bold cyan]🌐 [Web] Edição de {dt_card:%d/%m/%Y} encontrada no site para '{escape(titulo_base)}' "
-            f"(última local: {ultima_data.strftime('%d/%m/%Y') if ultima_data else 'nenhuma'}). Baixando...[/bold cyan]"
-        )
-        return [buscar_email_de_url(url_post, filtros_grupo=[chave], get=get, data_forcada=dt_card)]
+    def eh_item_night(e):
+        rem = e.get("remetente", "").lower()
+        ass = e.get("assunto", "").lower()
+        return "night" in rem or "night" in ass or "🌖" in ass
 
-    # Quando o card de destaque não exibe a data na vitrine (ex.: AiDrops), inspeciona o cabeçalho do post
-    resp_post = get(url_post, headers={"User-Agent": "Mozilla/5.0"}, timeout=25)
-    resp_post.raise_for_status()
-    soup_post = BeautifulSoup(resp_post.text, "html.parser")
-    texto_topo = soup_post.get_text(" ", strip=True)[:1500]
-    dt_post = extrair_data_de_texto(texto_topo)
-    if not dt_post:
-        return []
-    if ultima_data and dt_post <= ultima_data:
-        return []
-    if not ultima_data and (datetime.date.today() - dt_post).days > 2:
-        return []
-    logger.info(
-        f"[bold cyan]🌐 [Web] Edição de {dt_post:%d/%m/%Y} encontrada no site para '{escape(titulo_base)}' "
-        f"(última local: {ultima_data.strftime('%d/%m/%Y') if ultima_data else 'nenhuma'}). Baixando...[/bold cyan]"
-    )
-    return [_montar_item_de_html(url_post, resp_post.text, filtros_grupo=[chave], data_forcada=dt_post)]
+    tem_night_gmail = any(eh_item_night(e) for e in (emails_atuais_grupo or []))
+    tem_manha_gmail = any(not eh_item_night(e) for e in (emails_atuais_grupo or []))
+
+    itens = []
+    for idx, (url_post, texto_card) in enumerate(cards[:4]):
+        eh_night = "/p/night" in url_post.lower() or "night #" in texto_card.lower()
+        if emails_atuais_grupo and ((eh_night and tem_night_gmail) or (not eh_night and tem_manha_gmail)):
+            continue
+
+        dt_card = extrair_data_de_texto(texto_card) or extrair_data_de_texto(url_post)
+        if dt_card is not None:
+            if ultima_data:
+                if dt_card < ultima_data:
+                    continue
+                if dt_card == ultima_data:
+                    if not eh_night:
+                        continue
+                    resp_post = get(url_post, headers={"User-Agent": "Mozilla/5.0"}, timeout=25)
+                    resp_post.raise_for_status()
+                    texto_local = _texto_edicoes_da_data(pasta_resultados, titulo_base, dt_card) if pasta_resultados else ""
+                    if _post_ja_extraido_localmente(resp_post.text, texto_local):
+                        continue
+                    logger.info(
+                        f"[bold cyan]🌐 [Web] Edição noturna de {dt_card:%d/%m/%Y} encontrada no site para '{escape(titulo_base)}' "
+                        f"(ausente no último arquivo local). Baixando...[/bold cyan]"
+                    )
+                    itens.append(_montar_item_de_html(url_post, resp_post.text, filtros_grupo=[chave], data_forcada=dt_card))
+                    continue
+            elif (datetime.date.today() - dt_card).days > 2:
+                continue
+
+            logger.info(
+                f"[bold cyan]🌐 [Web] Edição de {dt_card:%d/%m/%Y} encontrada no site para '{escape(titulo_base)}' "
+                f"(última local: {ultima_data.strftime('%d/%m/%Y') if ultima_data else 'nenhuma'}). Baixando...[/bold cyan]"
+            )
+            itens.append(buscar_email_de_url(url_post, filtros_grupo=[chave], get=get, data_forcada=dt_card))
+            continue
+
+        # Quando o card de destaque não exibe a data na vitrine (ex.: AiDrops), inspeciona o cabeçalho do primeiro post
+        if idx == 0 and not itens:
+            resp_post = get(url_post, headers={"User-Agent": "Mozilla/5.0"}, timeout=25)
+            resp_post.raise_for_status()
+            soup_post = BeautifulSoup(resp_post.text, "html.parser")
+            texto_topo = soup_post.get_text(" ", strip=True)[:1500]
+            dt_post = extrair_data_de_texto(texto_topo)
+            if not dt_post:
+                continue
+            if ultima_data and dt_post <= ultima_data:
+                continue
+            if not ultima_data and (datetime.date.today() - dt_post).days > 2:
+                continue
+            logger.info(
+                f"[bold cyan]🌐 [Web] Edição de {dt_post:%d/%m/%Y} encontrada no site para '{escape(titulo_base)}' "
+                f"(última local: {ultima_data.strftime('%d/%m/%Y') if ultima_data else 'nenhuma'}). Baixando...[/bold cyan]"
+            )
+            itens.append(_montar_item_de_html(url_post, resp_post.text, filtros_grupo=[chave], data_forcada=dt_post))
+    return itens
 
 
 def _verificar_fonte_thepeak(chave, titulo_base, arquivo_url, ultima_data, get=requests.get):
@@ -463,7 +584,8 @@ def buscar_edicoes_faltantes_na_web(
     if not fontes_web:
         return []
 
-    grupos_presentes = set(agrupar_emails(emails_atuais, mapeamento).keys())
+    grupos_map = agrupar_emails(emails_atuais, mapeamento)
+    grupos_presentes = set(grupos_map.keys())
     titulos_presentes = {mapeamento.get(c, c) for c in grupos_presentes}
     logger.info("[cyan]🔎 [Web] Verificando nos sites oficiais se alguma edição de hoje não chegou por e-mail...[/cyan]")
 
@@ -474,7 +596,9 @@ def buscar_edicoes_faltantes_na_web(
             f.lower() in chave.lower() or f.lower() in titulo_base.lower() for f in filtros_grupo
         ):
             continue
-        if chave in grupos_presentes or titulo_base in titulos_presentes:
+        emails_grupo = grupos_map.get(chave, [])
+        esperado_dia = 2 if chave == "the news" else 1
+        if len(emails_grupo) >= esperado_dia or (esperado_dia == 1 and titulo_base in titulos_presentes):
             continue
 
         ultima_data = ultima_data_extraida_local(pasta_resultados, titulo_base)
@@ -487,7 +611,15 @@ def buscar_edicoes_faltantes_na_web(
             if tipo == "thenews":
                 novos = _verificar_fonte_thenews(chave, titulo_base, arquivo_url, ultima_data, get=get)
             elif tipo == "beehiiv":
-                novos = _verificar_fonte_beehiiv(chave, titulo_base, arquivo_url, ultima_data, get=get)
+                novos = _verificar_fonte_beehiiv(
+                    chave,
+                    titulo_base,
+                    arquivo_url,
+                    ultima_data,
+                    get=get,
+                    pasta_resultados=pasta_resultados,
+                    emails_atuais_grupo=emails_grupo,
+                )
             elif tipo == "thepeak":
                 novos = _verificar_fonte_thepeak(chave, titulo_base, arquivo_url, ultima_data, get=get)
             else:
@@ -498,7 +630,8 @@ def buscar_edicoes_faltantes_na_web(
 
         if novos:
             recuperados.extend(novos)
-            titulos_presentes.add(titulo_base)
+            if len(emails_grupo) + len(novos) >= esperado_dia:
+                titulos_presentes.add(titulo_base)
 
     if not recuperados:
         logger.info("[dim]  ✔ [Web] Todas as fontes externas estão em dia com os arquivos locais.[/dim]")
@@ -747,6 +880,14 @@ class Pipeline:
 
             unificar = False
             if len(emails_grupo) >= 2:
+                if any(not e.get("id") for e in emails_grupo):
+                    def _dt_ord(e):
+                        try:
+                            dt = email.utils.parsedate_to_datetime(e.get("data", ""))
+                            return dt if dt.tzinfo else dt.replace(tzinfo=datetime.timezone.utc)
+                        except Exception:
+                            return datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)
+                    emails_grupo.sort(key=_dt_ord, reverse=True)
                 if self.opcoes.unificar == "sim":
                     unificar = True
                 elif self.opcoes.unificar == "perguntar" and self.opcoes.interativo:

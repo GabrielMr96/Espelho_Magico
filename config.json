@@ -29,8 +29,8 @@
 
   "fontes_web": {
     "the news": {
-      "tipo": "thenews",
-      "arquivo_url": "https://thenews.com.br/newsletter/the-news"
+      "tipo": "beehiiv",
+      "arquivo_url": "https://thenewscc.beehiiv.com/archive"
     },
     "tns money": {
       "tipo": "thenews",

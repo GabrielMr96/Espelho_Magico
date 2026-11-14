@@ -343,6 +343,78 @@ def test_pipeline_executar_com_dupla_verificacao(tmp_path):
     assert "|" not in gerado
 
 
+def test_buscar_edicoes_beehiiv_recupera_manha_e_night_faltante(tmp_path):
+    (tmp_path / "Boletim Fora de Ordem #318.md").write_text(
+        "# Boletim Fora de Ordem #318 — 13 de novembro de 2026\n\n## Espanha aprova medidas\n\nTexto da manhã.\n",
+        encoding="utf-8",
+    )
+
+    archive_html = (
+        "<html><body>"
+        '<a href="/p/14-11-2026"></a>'
+        '<a href="/p/14-11-2026">3 hours ago 14/11/2026</a>'
+        '<a href="/p/night-350"></a>'
+        '<a href="/p/night-350">14 hours ago NIGHT #350 13/11/2026</a>'
+        '<a href="/p/13-11-2026"></a>'
+        '<a href="/p/13-11-2026">Nov 13, 2026 13/11/2026</a>'
+        "</body></html>"
+    )
+    post_14 = "<html><body><h1>14/11/2026</h1><p>EUA suspendem decolagens e pousos em todo o país.</p></body></html>"
+    post_night = (
+        "<html><body><h1>NIGHT #350</h1>"
+        "<p>Para hoje… Flávio Bolsonaro diz que não apoia a reeleição de Hugo Motta; "
+        "United proíbe agentes de AI de comprar passagens; Buser começa a vender voos; e mais. Sexta-feira, 13/11/26</p>"
+        "</body></html>"
+    )
+    paginas = {
+        "https://thenewscc.beehiiv.com/archive": archive_html,
+        "https://thenewscc.beehiiv.com/p/14-11-2026": post_14,
+        "https://thenewscc.beehiiv.com/p/night-350": post_night,
+    }
+
+    class Resp:
+        def __init__(self, text):
+            self.text = text
+            self.status_code = 200
+
+        def raise_for_status(self):
+            pass
+
+    fontes = {"the news": {"tipo": "beehiiv", "arquivo_url": "https://thenewscc.beehiiv.com/archive"}}
+    mapeamento = {"the news": "Boletim Fora de Ordem"}
+
+    # Sem e-mails no Gmail: recupera tanto 14/11 quanto NIGHT #350 de 13/11 (ignora 13/11 matinal)
+    recuperados = buscar_edicoes_faltantes_na_web(
+        emails_atuais=[],
+        pasta_resultados=tmp_path,
+        fontes_web=fontes,
+        mapeamento=mapeamento,
+        get=lambda url, **kw: Resp(paginas[url]),
+    )
+    assert len(recuperados) == 2
+    assert recuperados[0]["assunto"] == "the news: 14/11/2026"
+    assert formatar_data_email(recuperados[0]["data"]) == "14 de novembro de 2026"
+    assert recuperados[1]["assunto"] == "the news: NIGHT #350"
+    assert formatar_data_email(recuperados[1]["data"]) == "13 de novembro de 2026"
+
+    # Se NIGHT #350 já estiver contida no arquivo local de 13/11, não baixa novamente
+    (tmp_path / "Boletim Fora de Ordem #318.md").write_text(
+        "# Boletim Fora de Ordem #318 — 13 de novembro de 2026\n\n"
+        "## Flávio Bolsonaro não apoia Hugo Motta\n\n"
+        "United proíbe agentes de comprar passagens e Buser vende voos.\n",
+        encoding="utf-8",
+    )
+    recuperados2 = buscar_edicoes_faltantes_na_web(
+        emails_atuais=[],
+        pasta_resultados=tmp_path,
+        fontes_web=fontes,
+        mapeamento=mapeamento,
+        get=lambda url, **kw: Resp(paginas[url]),
+    )
+    assert [r["assunto"] for r in recuperados2] == ["the news: 14/11/2026"]
+
+
+
 
 
 
