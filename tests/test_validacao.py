@@ -1,6 +1,10 @@
 import datetime
+import io
 
-from espelho_magico.pipeline import extrair_data_de_texto
+from rich.console import Console
+from rich.text import Text
+
+from espelho_magico.pipeline import ConfigGrupo, Opcoes, Pipeline, extrair_data_de_texto
 from espelho_magico.validacao import (
     AVISO,
     CORRIGIDO,
@@ -8,13 +12,18 @@ from espelho_magico.validacao import (
     aplicar_dupla_verificacao,
     contar_noticias,
     converter_tabelas_em_topicos,
+    renderizar_relatorio,
     reorganizar_bloco_final,
     remover_links_e_imagens,
 )
 
 
+def _checagem(rel, prefixo):
+    return next(c for c in rel.checagens if c.regra.startswith(prefixo))
+
+
 def _status(rel, prefixo):
-    return next(c.status for c in rel.checagens if c.regra.startswith(prefixo))
+    return _checagem(rel, prefixo).status
 
 
 def test_converte_tabela_em_topicos_sem_perder_dados():
@@ -224,7 +233,179 @@ def test_unifica_multiplas_enquetes_no_mesmo_bloco():
         "Segunda pergunta?\n\n- Talvez\n- Nunca\n"
     )
     final, rel = aplicar_dupla_verificacao(md, idioma="pt", extrair_data=extrair_data_de_texto)
-    assert _status(rel, "Enquete do Dia") == CORRIGIDO
+    c_enq = _checagem(rel, "Enquete do Dia")
+    assert c_enq.status == CORRIGIDO
+    assert "2 enquetes" in c_enq.encontrado
+    assert "Primeira pergunta?" in c_enq.corrigido
     assert "Segunda pergunta?" not in final
     assert not rel.tem_aviso
+
+
+def test_relatorio_detalha_encontrado_e_corrigido_e_notifica_em_tempo_real():
+    entrada = (
+        "## Resultados financeiros\n\n"
+        "A receita cresceu 25%, chegando a 140 milhões, com 380 mil clientes e margem de 18%, "
+        "enquanto a dívida caiu 42% para 95 milhões."
+    )
+    md = (
+        "Abertura antes do H1.\n\n"
+        "## Enquete de hoje\n\nQual sua opinião?\n\n- Só uma opção\n\n"
+        "## Opinião do Leitor\n\nTexto dos leitores sobre a newsletter.\n\n"
+        "## Resultado da Enquete de Ontem\n\n60% votaram sim.\n\n"
+        "## Resultados financeiros\n\n"
+        "A receita cresceu 25% e o lucro é directed pela gestão — veja [nota oficial](https://x.com/a).\n\n"
+        "![foto](https://img/a.png)\n\n"
+        "| Ativo | Fechamento |\n| --- | --- |\n| Ibovespa | 172.000 |\n| Dólar | R$ 5,50 |\n\n"
+        "Oferecimento: Patrocinador X\n\n"
+        "# Título [Extra] sobrando\n\nMais texto.\n"
+    )
+    eventos = []
+
+    def notificar(evento, regra, **dados):
+        eventos.append((evento, regra, dados))
+
+    def reparar(conteudo, prompt):
+        if "idioma" in prompt.lower():
+            return conteudo.replace("é directed", "é dirigido")
+        return (
+            "# 13 de novembro de 2026\n\n"
+            "## Resultados financeiros\n\n"
+            "A receita cresceu 25%, chegando a 140 milhões, com 380 mil clientes e margem de 18%, "
+            "enquanto a dívida caiu 42% para 95 milhões e o lucro é dirigido pela gestão — veja nota oficial.\n\n"
+            "## Mercado financeiro\n\nNova seção restaurada.\n\n"
+            "- **Ibovespa:** Fechamento: 172.000\n- **Dólar:** Fechamento: R$ 5,50\n"
+        )
+
+    def gerar(_conteudo, _prompt):
+        return "## Enquete do Dia\n\nO mercado exagerou?\n\n- Sim\n- Não\n- Talvez\n- Depende"
+
+    _, rel = aplicar_dupla_verificacao(
+        md,
+        entrada="Data do e-mail: 13 de novembro de 2026\n\n" + entrada,
+        idioma="pt",
+        gerar=gerar,
+        extrair_data=extrair_data_de_texto,
+        reparar=reparar,
+        notificar=notificar,
+    )
+
+    c_cab = _checagem(rel, "Cabeçalho")
+    assert c_cab.status == CORRIGIDO
+    assert "linha 1 sem '# Data'" in c_cab.encontrado and "título(s) '#' extra(s)" in c_cab.encontrado
+    assert "inserido '# 13 de novembro de 2026'" in c_cab.corrigido and "rebaixado(s) para '##'" in c_cab.corrigido
+
+    c_links = _checagem(rel, "Links e imagens")
+    assert "link(s) Markdown" in c_links.encontrado and "imagem(ns) Markdown" in c_links.encontrado
+    assert "links convertidos em texto puro" in c_links.corrigido
+
+    c_tab = _checagem(rel, "Tabelas")
+    assert "Ibovespa, Dólar" in c_tab.encontrado and "2 tópico(s) narrativo(s)" in c_tab.corrigido
+
+    c_ruido = _checagem(rel, "Ruído")
+    assert "Oferecimento: Patrocinador X" in c_ruido.encontrado and "removido(s)" in c_ruido.corrigido
+
+    c_id = _checagem(rel, "Idioma")
+    assert "'é directed'" in c_id.encontrado and "'directed' → 'dirigido'" in c_id.corrigido
+
+    c_int = _checagem(rel, "Integridade")
+    assert c_int.status == CORRIGIDO
+    assert "140" in c_int.encontrado and "380" in c_int.encontrado
+    assert "100%" in c_int.corrigido and "+5 número(s) restaurado(s)" in c_int.corrigido
+    assert "completada(s): 'Resultados financeiros'" in c_int.corrigido
+
+    c_voz = _checagem(rel, "Voz dos Ouvintes")
+    assert c_voz.status == CORRIGIDO
+    assert "2 bloco(s)" in c_voz.encontrado and "'leitores' → 'ouvintes'" in c_voz.encontrado
+    assert "unificado(s) em '## Voz dos Ouvintes'" in c_voz.corrigido
+
+    c_enq = _checagem(rel, "Enquete do Dia")
+    assert c_enq.status == CORRIGIDO
+    assert "1 opção" in c_enq.encontrado and "O mercado exagerou?" in c_enq.corrigido
+
+    c_ord = _checagem(rel, "Ordem")
+    assert c_ord.status == CORRIGIDO
+    assert "fora de posição" in c_ord.encontrado and "reordenado" in c_ord.corrigido
+
+    # Eventos em tempo real têm ia_inicio + corrigido para reparos com IA e determinísticos
+    ia_inicios = [(r, d) for ev, r, d in eventos if ev == "ia_inicio"]
+    assert any(r == "Idioma (sem inglês misturado)" and "é directed" in d["encontrado"] for r, d in ia_inicios)
+    assert any(r == "Integridade (números)" and "140" in d["encontrado"] for r, d in ia_inicios)
+    assert any(r == "Enquete do Dia" and "1 opção" in d["encontrado"] for r, d in ia_inicios)
+
+    corrigidos = [(r, d) for ev, r, d in eventos if ev == "corrigido"]
+    assert any(r == "Integridade (números)" and d["usou_ia"] and "100%" in d["corrigido"] for r, d in corrigidos)
+    assert any(r == "Tabelas → tópicos" and not d["usou_ia"] and "Ibovespa" in d["encontrado"] for r, d in corrigidos)
+
+    # Renderização na tabela Rich e em texto puro não quebra com colchetes do Markdown
+    buf = io.StringIO()
+    Console(file=buf, width=120, no_color=True).print(renderizar_relatorio(rel, "Programa [Teste]"))
+    tabela_txt = buf.getvalue()
+    assert "Encontrado:" in tabela_txt and "Corrigido:" in tabela_txt
+    assert "Encontrado:" in rel.como_texto() and "→ Corrigido:" in rel.como_texto()
+
+
+def test_promover_h3_detalha_encontrado_e_corrigido():
+    md = (
+        "# 13 de novembro de 2026\n\n"
+        "### Primeira notícia\n\nTexto 1.\n\n"
+        "### Segunda notícia\n\nTexto 2.\n\n"
+        "## Enquete do Dia\n\nQual?\n\n- A\n- B\n"
+    )
+    _, rel = aplicar_dupla_verificacao(md, idioma="pt", extrair_data=extrair_data_de_texto)
+    c_not = _checagem(rel, "Notícias")
+    assert c_not.status == CORRIGIDO
+    assert "Primeira notícia" in c_not.encontrado and "Segunda notícia" in c_not.encontrado
+    assert "2 subtítulo(s) '###' promovido(s)" in c_not.corrigido
+
+
+def test_pipeline_loga_detalhes_dupla_verificacao(tmp_path, caplog):
+    texto_filler = "Detalhamento editorial completo da matéria para garantir o corpo da edição. " * 4
+
+    class ExtratorFalso:
+        def __init__(self):
+            self.chamadas = 0
+
+        def extrair(self, _conteudo, _prompt):
+            self.chamadas += 1
+            if self.chamadas == 1:
+                return (
+                    "# 15 de novembro de 2026\n\n"
+                    f"## Economia\n\nA receita subiu 25%. {texto_filler}\n\n"
+                    "| Ativo | Valor |\n| --- | --- |\n| Ibovespa | 172.000 |\n"
+                )
+            if self.chamadas == 2:
+                return (
+                    "# 15 de novembro de 2026\n\n"
+                    f"## Economia\n\nA receita subiu 25% para 140 milhões com 380 mil clientes, "
+                    f"margem de 18%, alta de 42% e meta de 95 milhões. {texto_filler}\n\n"
+                    "- **Ibovespa:** Valor: 172.000"
+                )
+            return "## Enquete do Dia\n\nO resultado convenceu?\n\n- Sim\n- Não\n- Em parte\n- Nunca"
+
+    pipe = Pipeline(Opcoes(dry_run=True, max_workers=1), extrator=ExtratorFalso(), drive_service=None, gmail_service=None)
+    pipe.pasta_saida = tmp_path
+    cfg = ConfigGrupo(
+        chave="the news",
+        emails=[{
+            "id": None,
+            "assunto": "the news: 15/11/2026",
+            "remetente": "the news",
+            "data": "Sun, 15 Nov 2026 09:00:00 +0000",
+            "conteudo_html": (
+                "<p>A receita subiu 25% para 140 milhões com 380 mil clientes, "
+                "margem de 18%, alta de 42% e meta de 95 milhões. Ibovespa 172.000.</p>"
+            ),
+            "eh_html": True,
+        }],
+        titulo_base="Boletim Fora de Ordem",
+        nome_final="Boletim Fora de Ordem #320.md",
+    )
+    with caplog.at_level("INFO", logger="espelho_magico"):
+        resultados = pipe.executar([cfg])
+
+    assert resultados[0].status == "dry"
+    mensagens = "\n".join(Text.from_markup(r.message).plain for r in caplog.records)
+    assert "[Tabelas → tópicos]" in mensagens and "Ibovespa" in mensagens
+    assert "[Integridade (números)]" in mensagens and "140" in mensagens and "100%" in mensagens
+    assert "[Enquete do Dia]" in mensagens and "O resultado convenceu?" in mensagens
 

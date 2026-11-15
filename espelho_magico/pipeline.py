@@ -1070,14 +1070,29 @@ class Pipeline:
         self._etapa(cfg, "🔎 dupla verificação das regras", 2)
         logger.info("[cyan]🔎 Dupla verificação: conferindo estrutura, integridade, idioma e enquete...[/cyan]")
 
+        def notificar_verificacao(evento, regra, **dados):
+            rotulo = escape(f"[{regra}]")
+            if evento == "ia_inicio":
+                self._etapa(cfg, dados.get("etapa") or f"🔧 IA · {escape(regra)}")
+                logger.info(
+                    f"[cyan]🔎 Dupla verificação {rotulo}:[/cyan] "
+                    f"encontrado {escape(dados.get('encontrado', ''))} → {escape(dados.get('acao', 'corrigindo com IA...'))}"
+                )
+            elif evento == "corrigido":
+                corr = escape(dados.get("corrigido", ""))
+                if dados.get("usou_ia"):
+                    logger.info(f"[cyan]🔧 Dupla verificação {rotulo}:[/cyan] corrigido — {corr}")
+                else:
+                    enc = escape(dados.get("encontrado", ""))
+                    logger.info(f"[cyan]🔧 Dupla verificação {rotulo}:[/cyan] encontrado {enc} → corrigido: {corr}")
+            elif evento == "aviso":
+                enc = escape(dados.get("encontrado", ""))
+                logger.warning(f"[yellow]⚠ Dupla verificação {rotulo}:[/yellow] encontrado {enc}")
+
         def gerar_enquete(conteudo, prompt):
-            logger.info("[cyan]🗳 Fonte sem Enquete do Dia: pedindo à IA uma enquete sobre a pauta...[/cyan]")
-            self._etapa(cfg, "🗳 criando Enquete do Dia com IA")
             return self.extrator.extrair(conteudo, prompt)
 
         def reparar_com_ia(conteudo, prompt):
-            logger.info("[cyan]🔧 Dupla verificação: corrigindo desvios automaticamente com IA...[/cyan]")
-            self._etapa(cfg, "🔧 corrigindo desvios com IA")
             return self.extrator.extrair(conteudo, prompt)
 
         final, relatorio = aplicar_dupla_verificacao(
@@ -1085,6 +1100,7 @@ class Pipeline:
             gerar=gerar_enquete if self.extrator else None,
             extrair_data=extrair_data_de_texto,
             reparar=reparar_com_ia if self.extrator else None,
+            notificar=notificar_verificacao,
         )
         final = aplicar_cabecalho_edicao(final, cfg.nome_final)
         console.print(renderizar_relatorio(relatorio, nome))

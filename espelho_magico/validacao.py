@@ -19,8 +19,10 @@ Regras verificadas:
 """
 import re
 from dataclasses import dataclass, field
+from difflib import SequenceMatcher
 
 from rich import box
+from rich.markup import escape
 from rich.table import Table
 
 OK, CORRIGIDO, AVISO, FALHA = "ok", "corrigido", "aviso", "falha"
@@ -136,19 +138,45 @@ _ROTULOS_COLUNA_PT = {"ytd": "no ano", "1 dia": "no dia", "dia": "no dia", "vari
 
 # --- Relatório ---------------------------------------------------------------
 
+def _amostra(itens, limite=3, aspas=True):
+    """Formata uma lista curta de exemplos únicos para o usuário ler o que foi encontrado/corrigido."""
+    vistos = []
+    for item in itens:
+        t = str(item).strip()
+        if t and t not in vistos:
+            vistos.append(t)
+    if not vistos:
+        return ""
+    exibidos = [f"'{x}'" if aspas else x for x in vistos[:limite]]
+    sufixo = f" (+{len(vistos) - limite})" if len(vistos) > limite else ""
+    return ", ".join(exibidos) + sufixo
+
+
+def _emitir(notificar, evento, regra, **dados):
+    if notificar:
+        notificar(evento, regra, **dados)
+
+
 @dataclass
 class Checagem:
     regra: str
     status: str
     detalhe: str = ""
+    encontrado: str = ""
+    corrigido: str = ""
 
 
 @dataclass
 class RelatorioValidacao:
     checagens: list = field(default_factory=list)
 
-    def add(self, regra, status, detalhe=""):
-        self.checagens.append(Checagem(regra, status, detalhe))
+    def add(self, regra, status, detalhe="", encontrado="", corrigido=""):
+        if not detalhe:
+            if encontrado and corrigido:
+                detalhe = f"Encontrado: {encontrado} → Corrigido: {corrigido}"
+            elif encontrado:
+                detalhe = f"Encontrado: {encontrado}"
+        self.checagens.append(Checagem(regra, status, detalhe, encontrado, corrigido))
 
     def contagem(self):
         cont = {OK: 0, CORRIGIDO: 0, AVISO: 0, FALHA: 0}
@@ -179,7 +207,7 @@ class RelatorioValidacao:
 def renderizar_relatorio(relatorio, titulo):
     """Tabela Rich com o resultado de cada regra (exibida no terminal ao fim de cada programa)."""
     tabela = Table(
-        title=f"🔎 Dupla verificação · {titulo}",
+        title=f"🔎 Dupla verificação · {escape(titulo)}",
         title_style="bold magenta",
         title_justify="left",
         box=box.ROUNDED,
@@ -192,7 +220,17 @@ def renderizar_relatorio(relatorio, titulo):
     tabela.add_column("Resultado")
     for c in relatorio.checagens:
         cor = CORES[c.status]
-        tabela.add_row(f"[{cor}]{ICONES[c.status]}[/{cor}]", c.regra, f"[{cor}]{c.detalhe}[/{cor}]")
+        if c.encontrado and c.corrigido:
+            celula = (
+                f"[yellow]Encontrado:[/yellow] {escape(c.encontrado)}\n"
+                f"[cyan]Corrigido:[/cyan] {escape(c.corrigido)}"
+            )
+        elif c.encontrado and c.status in (AVISO, FALHA):
+            etiqueta_cor = "red" if c.status == FALHA else "yellow"
+            celula = f"[{etiqueta_cor}]Encontrado:[/{etiqueta_cor}] {escape(c.encontrado)}"
+        else:
+            celula = f"[{cor}]{escape(c.detalhe)}[/{cor}]"
+        tabela.add_row(f"[{cor}]{ICONES[c.status]}[/{cor}]", escape(c.regra), celula)
     tabela.caption = f"Resumo: {relatorio.resumo}  (✔ ok · 🔧 corrigido automaticamente · ⚠ revisar)"
     tabela.caption_justify = "left"
     return tabela
@@ -250,10 +288,10 @@ def _celulas(linha):
     return [c.strip() for c in linha.strip().strip("|").split("|")]
 
 
-def converter_tabelas_em_topicos(md, idioma="pt"):
-    """Troca tabelas Markdown por tópicos `- **Ativo:** coluna valor · coluna valor` (100% dos dados)."""
+def _converter_tabelas_detalhado(md, idioma="pt"):
+    """Troca tabelas Markdown por tópicos narrativos e devolve detalhes do que foi convertido."""
     linhas = md.split("\n")
-    saida, i, convertidas = [], 0, 0
+    saida, i, convertidas, linhas_convertidas, rotulos = [], 0, 0, 0, []
     while i < len(linhas):
         if (
             _RE_LINHA_TABELA.match(linhas[i])
@@ -266,6 +304,9 @@ def converter_tabelas_em_topicos(md, idioma="pt"):
                 celulas = _celulas(linhas[j])
                 if any(celulas):
                     rotulo = celulas[0]
+                    rotulo_limpo = rotulo.strip("*_ ").strip()
+                    if rotulo_limpo:
+                        rotulos.append(rotulo_limpo)
                     resto = []
                     for k in range(1, len(celulas)):
                         if not celulas[k]:
@@ -282,31 +323,58 @@ def converter_tabelas_em_topicos(md, idioma="pt"):
             if j < len(linhas) and linhas[j].strip():
                 saida.append("")
             convertidas += 1
+            linhas_convertidas += len(itens)
             i = j
             continue
         saida.append(linhas[i])
         i += 1
-    return "\n".join(saida), convertidas
+    return "\n".join(saida), {
+        "convertidas": convertidas,
+        "linhas": linhas_convertidas,
+        "rotulos": rotulos,
+    }
 
 
-def remover_links_e_imagens(md):
-    """Remove imagens Markdown, troca `[texto](url)` por `texto` e apaga URLs cruas (não narráveis)."""
-    total = len(_RE_IMAGEM_MD.findall(md)) + len(_RE_LINK_MD.findall(md))
+def converter_tabelas_em_topicos(md, idioma="pt"):
+    """Troca tabelas Markdown por tópicos `- **Ativo:** coluna valor · coluna valor` (100% dos dados)."""
+    novo_md, detalhes = _converter_tabelas_detalhado(md, idioma)
+    return novo_md, detalhes["convertidas"]
+
+
+def _remover_links_e_imagens_detalhado(md):
+    """Remove imagens Markdown, links e URLs cruas e devolve resumo do que foi encontrado."""
+    links_md = _RE_LINK_MD.findall(md)
+    n_imgs = len(_RE_IMAGEM_MD.findall(md))
+    n_links_md = len(links_md)
     md = _RE_IMAGEM_MD.sub("", md)
     md = _RE_LINK_MD.sub(r"\1", md)
-    novas = []
+    urls_cruas, n_urls, novas = [], 0, []
     for linha in md.split("\n"):
         if re.search(r"https?://|www\.", linha):
-            total += len(re.findall(r"https?://|www\.", linha))
+            urls_cruas.extend(re.findall(r"(?:https?://|www\.)[^\s)\]]+", linha))
+            n_urls += len(re.findall(r"https?://|www\.", linha))
             linha = _RE_URL_CRUA.sub("", linha).rstrip()
             if re.fullmatch(r"\s*[-*•]?\s*", linha):
                 continue
         novas.append(linha)
-    return "\n".join(novas), total
+    return "\n".join(novas), {
+        "total": n_imgs + n_links_md + n_urls,
+        "n_imgs": n_imgs,
+        "n_links_md": n_links_md,
+        "n_urls": n_urls,
+        "links_md": links_md,
+        "urls_cruas": urls_cruas,
+    }
+
+
+def remover_links_e_imagens(md):
+    """Remove imagens Markdown, troca `[texto](url)` por `texto` e apaga URLs cruas (não narráveis)."""
+    novo_md, detalhes = _remover_links_e_imagens_detalhado(md)
+    return novo_md, detalhes["total"]
 
 
 def _adaptar_ouvintes(linhas, idioma):
-    trocas = 0
+    trocas, exemplos = 0, []
     if idioma == "en":
         pares = [
             (r"\bReaders\b", "Listeners"),
@@ -329,24 +397,49 @@ def _adaptar_ouvintes(linhas, idioma):
     novas = []
     for linha in linhas:
         for padrao, troca in pares:
-            linha, n = re.subn(padrao, troca, linha)
-            trocas += n
+            if re.search(padrao, linha):
+                for m in re.finditer(padrao, linha):
+                    par = f"'{m.group(0)}' → '{troca}'"
+                    if par not in exemplos:
+                        exemplos.append(par)
+                linha, n = re.subn(padrao, troca, linha)
+                trocas += n
         novas.append(linha)
-    return novas, trocas
+    return novas, trocas, exemplos
 
 
 def reorganizar_bloco_final(md, idioma="pt"):
     """Garante a ordem notícias → Voz dos Ouvintes → Enquete do Dia e padroniza os títulos.
 
     Devolve (md, info) com: mudou_ordem, voz (qtde de seções unificadas), trocas_ouvintes,
-    enquete_renomeada, opcoes_enquete, perguntas_enquete.
+    enquete_renomeada, opcoes_enquete, perguntas_enquete e detalhes para o relatório.
     """
     preambulo, secoes = dividir_secoes(md)
     voz = [s for s in secoes if _eh_voz(s)]
     enquetes = [s for s in secoes if _eh_enquete(s)]
     corpo = [s for s in secoes if _eh_secao_noticia(s)]
-    info = {"mudou_ordem": False, "voz": len(voz), "trocas_ouvintes": 0, "enquete_renomeada": False,
-            "opcoes_enquete": 0, "perguntas_enquete": 0, "tem_enquete": bool(enquetes)}
+    idx_ultima_noticia = max((i for i, s in enumerate(secoes) if _eh_secao_noticia(s)), default=-1)
+    primeiro_voz = next((i for i, s in enumerate(secoes) if _eh_voz(s)), len(secoes))
+    fora_de_ordem = [
+        s["titulo"]
+        for i, s in enumerate(secoes)
+        if (not _eh_secao_noticia(s))
+        and (i < idx_ultima_noticia or (_eh_enquete(s) and voz and i < primeiro_voz))
+    ]
+    info = {
+        "mudou_ordem": False,
+        "voz": len(voz),
+        "titulos_voz": [s["titulo"] for s in voz],
+        "trocas_ouvintes": 0,
+        "exemplos_trocas": [],
+        "enquete_renomeada": False,
+        "enquete_duplicada": len(enquetes) > 1,
+        "titulo_enquete_original": enquetes[0]["titulo"] if enquetes else "",
+        "opcoes_enquete": 0,
+        "perguntas_enquete": 0,
+        "tem_enquete": bool(enquetes),
+        "fora_de_ordem": fora_de_ordem,
+    }
 
     nova_ordem = corpo + voz + enquetes
     info["mudou_ordem"] = [id(s) for s in nova_ordem] != [id(s) for s in secoes]
@@ -360,7 +453,7 @@ def reorganizar_bloco_final(md, idioma="pt"):
             if s["titulo"].lower() != canon.lower():
                 linhas_voz += [f"### {s['titulo']}", ""]
             linhas_voz += [l for l in corpo_s] + [""]
-        linhas_voz, info["trocas_ouvintes"] = _adaptar_ouvintes(linhas_voz, idioma)
+        linhas_voz, info["trocas_ouvintes"], info["exemplos_trocas"] = _adaptar_ouvintes(linhas_voz, idioma)
         bloco_voz = [{"titulo": canon, "linhas": _sem_rabo(linhas_voz)}]
 
     bloco_enquete = []
@@ -538,8 +631,8 @@ def _formatar_data(dt, idioma="pt"):
 
 
 def _corrigir_cabecalho(md, entrada="", idioma="pt", extrair_data=None):
-    """Garante H1 único na linha 1 com data reconhecível quando possível extrair a data."""
-    alterou = False
+    """Garante H1 único na linha 1 com data reconhecível e detalha o que foi encontrado e corrigido."""
+    achados, ajustes = [], []
     md = md.strip()
 
     def data_de(txt):
@@ -552,23 +645,26 @@ def _corrigir_cabecalho(md, entrada="", idioma="pt", extrair_data=None):
     if not primeira.startswith("# "):
         dt_str = data_de(entrada) or data_de(md)
         if dt_str:
+            pre_desc = f"'{primeira[:40]}'" if primeira else "início vazio"
+            achados.append(f"linha 1 sem '# Data' ({pre_desc})")
             md = f"# {dt_str}\n\n{md}" if md else f"# {dt_str}"
-            alterou = True
+            ajustes.append(f"inserido '# {dt_str}' no topo")
     else:
         data_ok = extrair_data(primeira) if extrair_data else True
         if not data_ok:
             dt_str = data_de(entrada) or data_de("\n".join(linhas[1:]))
             if dt_str:
                 titulo_atual = primeira.lstrip("# ").strip()
+                achados.append(f"título '{primeira[:50]}' sem data reconhecível")
                 if not titulo_atual or re.fullmatch(r"(?:sem\s+data|edi[cç][aã]o(?:\s+de\s+hoje)?)", titulo_atual, re.I):
                     linhas[0] = f"# {dt_str}"
                 else:
                     linhas[0] = f"# {titulo_atual} — {dt_str}"
                 md = "\n".join(linhas)
-                alterou = True
+                ajustes.append(f"ajustado para '{linhas[0]}'")
 
     linhas = md.split("\n")
-    novas = []
+    novas, h1_extras = [], []
     viu_h1 = False
     for linha in linhas:
         if re.match(r"^#\s+", linha):
@@ -576,30 +672,41 @@ def _corrigir_cabecalho(md, entrada="", idioma="pt", extrair_data=None):
                 viu_h1 = True
                 novas.append(linha)
             else:
+                h1_extras.append(linha.strip()[:50])
                 novas.append("#" + linha)
-                alterou = True
         else:
             novas.append(linha)
+    if h1_extras:
+        achados.append(f"{len(h1_extras)} título(s) '#' extra(s) no corpo ({_amostra(h1_extras, 2)})")
+        ajustes.append("rebaixado(s) para '##'")
     md = "\n".join(novas).strip()
 
     linhas_fin = md.split("\n")
     primeira_fin = linhas_fin[0].strip() if linhas_fin else ""
     if not primeira_fin.startswith("# "):
-        return md, AVISO, "linha 1 não é um título # com a data da edição"
+        enc = f"linha 1 não é um título '#' com a data da edição ('{primeira_fin[:40]}')"
+        return md, AVISO, "", enc, ""
     if extrair_data and not extrair_data(primeira_fin):
-        return md, AVISO, f"sem data reconhecível em '{primeira_fin[:60]}'"
-    sufixo = " (ajustado automaticamente)" if alterou else ""
-    return md, (CORRIGIDO if alterou else OK), primeira_fin.lstrip("# ").strip() + sufixo
+        enc = f"sem data reconhecível em '{primeira_fin[:60]}'"
+        return md, AVISO, "", enc, ""
+    if achados:
+        return md, CORRIGIDO, "", "; ".join(achados), "; ".join(ajustes)
+    return md, OK, primeira_fin.lstrip("# ").strip(), "", ""
 
 
-def remover_ruido_residual(md):
-    """Remove linhas de anúncio/paywall/CTA residuais e CTAs embutidos seguros. Devolve (md, removidos)."""
+def _remover_ruido_detalhado(md):
+    """Remove linhas de anúncio/paywall/CTA residuais e CTAs embutidos seguros, retornando amostras."""
     removidos = 0
+    amostras = []
     novas = []
     for linha in md.split("\n"):
         if _RE_RUIDO_LINHA.match(linha):
             removidos += 1
+            amostras.append(linha.strip()[:60])
             continue
+        matches_inline = [m.group(0).strip()[:60] for m in _RE_RUIDO_INLINE.finditer(linha)]
+        if matches_inline:
+            amostras.extend(matches_inline)
         nova, n = _RE_RUIDO_INLINE.subn("", linha)
         if n:
             removidos += n
@@ -607,20 +714,27 @@ def remover_ruido_residual(md):
             if not nova:
                 continue
         novas.append(nova)
-    return "\n".join(novas), removidos
+    return "\n".join(novas), {"removidos": removidos, "amostras": amostras}
+
+
+def remover_ruido_residual(md):
+    """Remove linhas de anúncio/paywall/CTA residuais e CTAs embutidos seguros. Devolve (md, removidos)."""
+    novo_md, info = _remover_ruido_detalhado(md)
+    return novo_md, info["removidos"]
 
 
 def _promover_subtitulos_se_sem_noticias(md):
-    """Se a IA gerou ### em vez de ## para as notícias, promove para ## automaticamente."""
+    """Se a IA gerou ### em vez de ## para as notícias, promove para ## e retorna os títulos ajustados."""
     if contar_noticias(md) > 0:
-        return md, 0
-    promovidos = 0
+        return md, []
+    promovidos = []
     novas = []
     for linha in md.split("\n"):
         m = re.match(r"^###\s+(.+?)\s*$", linha)
         if m and not _RE_ENQUETE.match(m.group(1)) and not _RE_VOZ.match(m.group(1)):
-            novas.append(f"## {m.group(1)}")
-            promovidos += 1
+            titulo = m.group(1).strip()
+            novas.append(f"## {titulo}")
+            promovidos.append(titulo)
         else:
             novas.append(linha)
     return "\n".join(novas), promovidos
@@ -644,6 +758,16 @@ def _diagnostico_idioma(md, idioma):
     return False, "português consistente"
 
 
+def _secoes_com_problema_idioma(md, idioma):
+    _, secoes = dividir_secoes(md)
+    afetadas = []
+    for s in secoes:
+        prob, det = _diagnostico_idioma("\n".join(s["linhas"]), idioma)
+        if prob:
+            afetadas.append((s["titulo"], det))
+    return afetadas
+
+
 def _higienizar_candidato(md, idioma):
     """Reaplica limpezas determinísticas sobre textos devolvidos por uma etapa de reparo da IA."""
     md, _ = remover_links_e_imagens(md)
@@ -652,10 +776,76 @@ def _higienizar_candidato(md, idioma):
     return re.sub(r"\n{3,}", "\n\n", md).strip()
 
 
+def _indice_secao_correspondente(titulo, secoes, indice_norm=None):
+    """Encontra o índice da seção em `secoes` por título normalizado exato ou similaridade (>= 0.65)."""
+    chave = _norm_titulo(titulo)
+    if indice_norm is None:
+        indice_norm = {_norm_titulo(s["titulo"]): i for i, s in enumerate(secoes)}
+    idx = indice_norm.get(chave)
+    if idx is not None:
+        return idx
+    palavras = set(chave.split())
+    if not palavras or not secoes:
+        return None
+    melhor = max(
+        range(len(secoes)),
+        key=lambda i: len(palavras & set(_norm_titulo(secoes[i]["titulo"]).split())) / len(palavras),
+    )
+    comum = len(palavras & set(_norm_titulo(secoes[melhor]["titulo"]).split())) / len(palavras)
+    return melhor if comum >= 0.65 else None
+
+
+def _trocas_idioma_concisas(linhas_antes, linhas_depois, idioma):
+    """Identifica substituições curtas de frase/termo feitas pela IA nas linhas com mistura de idioma."""
+    trocas = []
+    for i, l_a in enumerate(linhas_antes):
+        if idioma == "en":
+            tem_misto = bool(_RE_TITULO_PT_EM_EN.search(l_a) or _RE_PALAVRAS_PT.search(l_a))
+        else:
+            tem_misto = _diagnostico_idioma(l_a, "pt")[0]
+        if not tem_misto:
+            continue
+        l_d = linhas_depois[i] if i < len(linhas_depois) else max(
+            linhas_depois,
+            key=lambda x: SequenceMatcher(None, l_a, x).ratio(),
+            default="",
+        )
+        if not l_d or l_a == l_d:
+            continue
+        palavras_a, palavras_d = l_a.split(), l_d.split()
+        for tag, i1, i2, j1, j2 in SequenceMatcher(None, palavras_a, palavras_d).get_opcodes():
+            if tag == "replace" and 1 <= (i2 - i1) <= 4 and 1 <= (j2 - j1) <= 4:
+                ant = " ".join(palavras_a[i1:i2])
+                dep = " ".join(palavras_d[j1:j2])
+                trocas.append(f"'{ant}' → '{dep}'")
+    return trocas
+
+
+def _resumir_reparo_idioma(md_antes, md_depois, idioma, afetadas):
+    _, secs_antes = dividir_secoes(md_antes)
+    _, secs_depois = dividir_secoes(md_depois)
+    idx_depois = {_norm_titulo(s["titulo"]): i for i, s in enumerate(secs_depois)}
+    titulos_afetados = {t for t, _ in afetadas}
+    trocas = []
+    for s_a in secs_antes:
+        if s_a["titulo"] not in titulos_afetados:
+            continue
+        idx_d = _indice_secao_correspondente(s_a["titulo"], secs_depois, idx_depois)
+        if idx_d is not None:
+            trocas.extend(_trocas_idioma_concisas(s_a["linhas"], secs_depois[idx_d]["linhas"], idioma))
+
+    secoes_str = _amostra([t for t, _ in afetadas], 2)
+    onde = f" na(s) seção(ões) {secoes_str}" if secoes_str else ""
+    if trocas:
+        return f"corrigido com IA{onde}: {_amostra(trocas, 3, aspas=False)}"
+    return f"reescrita com IA{onde} (eliminado: {_amostra([d for _, d in afetadas], 2, aspas=False)})"
+
+
 def _reparar_idioma_com_ia(md, idioma, reparar):
     """Usa IA para eliminar mistura de idiomas nas seções afetadas sem perder fatos ou números."""
     pre, secoes = dividir_secoes(md)
     afetadas = [s for s in secoes if _diagnostico_idioma("\n".join(s["linhas"]), idioma)[0]]
+    afetadas_info = [(s["titulo"], _diagnostico_idioma("\n".join(s["linhas"]), idioma)[1]) for s in afetadas]
     if not afetadas or len(md) <= 8500:
         alvo = md
         parcial = False
@@ -678,9 +868,9 @@ def _reparar_idioma_com_ia(md, idioma, reparar):
     try:
         cand = _higienizar_candidato(reparar(alvo, prompt), idioma)
     except Exception:
-        return md, False
+        return md, False, ""
     if not cand:
-        return md, False
+        return md, False, ""
 
     if parcial:
         _, secs_rep = dividir_secoes(cand)
@@ -690,10 +880,10 @@ def _reparar_idioma_com_ia(md, idioma, reparar):
 
     prob, _ = _diagnostico_idioma(cand, idioma)
     if prob or contar_noticias(cand) < contar_noticias(md):
-        return md, False
+        return md, False, ""
     if len(_numeros(cand)) < max(0, len(_numeros(md)) - 1):
-        return md, False
-    return cand, True
+        return md, False, ""
+    return cand, True, _resumir_reparo_idioma(md, cand, idioma, afetadas_info)
 
 
 def _norm_titulo(titulo):
@@ -732,19 +922,7 @@ def _mesclar_secoes_recuperadas(md, recuperado, full_doc):
         if not _eh_secao_noticia(s_rec):
             continue
         chave = _norm_titulo(s_rec["titulo"])
-        idx = indice_corpos.get(chave)
-        if idx is None:
-            palavras_rec = set(chave.split())
-            if palavras_rec:
-                melhor = max(
-                    range(len(corpos)),
-                    key=lambda i: len(palavras_rec & set(_norm_titulo(corpos[i]["titulo"]).split())) / len(palavras_rec),
-                    default=None,
-                )
-                if melhor is not None:
-                    comum = len(palavras_rec & set(_norm_titulo(corpos[melhor]["titulo"]).split())) / len(palavras_rec)
-                    if comum >= 0.65:
-                        idx = melhor
+        idx = _indice_secao_correspondente(s_rec["titulo"], corpos, indice_corpos)
         if idx is not None:
             txt_rec = "\n".join(s_rec["linhas"])
             txt_old = "\n".join(corpos[idx]["linhas"])
@@ -756,12 +934,41 @@ def _mesclar_secoes_recuperadas(md, recuperado, full_doc):
     return juntar_secoes(pre_orig, corpos + finais)
 
 
+def _resumir_recuperacao_integridade(md_antes, md_depois, entrada, pct_antes, faltantes_antes):
+    pct_depois, presentes_depois, faltantes_depois, _, _ = _analisar_integridade(entrada, md_depois)
+    total_in = len(presentes_depois) + len(faltantes_depois)
+    nums_recuperados = [bruto for norm, bruto in faltantes_antes.items() if norm not in faltantes_depois]
+
+    corpos_antes = [s for s in dividir_secoes(md_antes)[1] if _eh_secao_noticia(s)]
+    corpos_depois = [s for s in dividir_secoes(md_depois)[1] if _eh_secao_noticia(s)]
+    idx_antes = {_norm_titulo(s["titulo"]): i for i, s in enumerate(corpos_antes)}
+    novas_secoes, completadas = [], []
+    for s_dep in corpos_depois:
+        idx = _indice_secao_correspondente(s_dep["titulo"], corpos_antes, idx_antes)
+        if idx is None:
+            novas_secoes.append(s_dep["titulo"])
+            continue
+        txt_a = "\n".join(corpos_antes[idx]["linhas"])
+        txt_d = "\n".join(s_dep["linhas"])
+        if (set(_numeros(txt_d)) - set(_numeros(txt_a))) or len(txt_d) > len(txt_a) + 20:
+            completadas.append(s_dep["titulo"])
+
+    partes = [f"preservação subiu de {pct_antes}% para {pct_depois}% ({len(presentes_depois)}/{total_in})"]
+    if nums_recuperados:
+        partes.append(f"+{len(nums_recuperados)} número(s) restaurado(s) ({_amostra(nums_recuperados, 6, aspas=False)})")
+    if novas_secoes:
+        partes.append(f"seção(ões) adicionada(s): {_amostra(novas_secoes, 2)}")
+    if completadas:
+        partes.append(f"completada(s): {_amostra(completadas, 2)}")
+    return " · ".join(partes), faltantes_depois
+
+
 def _reparar_integridade_com_ia(md, entrada, idioma, reparar):
-    """Tenta recuperar com IA notícias/números omitidos da fonte e valida antes de aceitar."""
+    """Tenta recuperar com IA notícias/números omitidos da fonte e detalha o que foi restaurado."""
     pct_antes, _, faltantes, _, entrada_limpa = _analisar_integridade(entrada, md)
     trechos = _trechos_para_integridade(entrada_limpa, faltantes)
     if not trechos:
-        return md, pct_antes, pct_antes, False
+        return md, pct_antes, pct_antes, False, "", faltantes
 
     lista_ausentes = ", ".join(list(faltantes.values())[:10])
     full_doc = len(md) <= 8500
@@ -789,20 +996,30 @@ def _reparar_integridade_com_ia(md, entrada, idioma, reparar):
     try:
         resposta = reparar(conteudo, instrucao)
     except Exception:
-        return md, pct_antes, pct_antes, False
+        return md, pct_antes, pct_antes, False, "", faltantes
     if not resposta:
-        return md, pct_antes, pct_antes, False
+        return md, pct_antes, pct_antes, False, "", faltantes
 
     resposta = _higienizar_candidato(resposta, idioma)
     cand = _mesclar_secoes_recuperadas(md, resposta, full_doc=full_doc)
     cand = _higienizar_candidato(cand, idioma)
     if contar_noticias(cand) < contar_noticias(md) or len(cand) < len(md) * 0.85:
-        return md, pct_antes, pct_antes, False
+        return md, pct_antes, pct_antes, False, "", faltantes
 
     pct_depois, _, _, _, _ = _analisar_integridade(entrada, cand)
     if pct_depois <= pct_antes:
-        return md, pct_antes, pct_antes, False
-    return cand, pct_antes, pct_depois, True
+        return md, pct_antes, pct_antes, False, "", faltantes
+
+    det_rec, faltantes_depois = _resumir_recuperacao_integridade(md, cand, entrada, pct_antes, faltantes)
+    return cand, pct_antes, pct_depois, True, det_rec, faltantes_depois
+
+
+def _extrair_pergunta_enquete(bloco):
+    for linha in (bloco or "").split("\n"):
+        l = linha.strip()
+        if l and not l.startswith("#") and not _RE_BULLET.match(l):
+            return l[:100]
+    return ""
 
 
 def _limpar_enquete_multipla(md, idioma="pt"):
@@ -810,6 +1027,7 @@ def _limpar_enquete_multipla(md, idioma="pt"):
     pre, secoes = dividir_secoes(md)
     canon = TITULO_ENQUETE[idioma]
     alterou = False
+    pergunta_mantida = ""
     for s in secoes:
         if not _eh_enquete(s):
             continue
@@ -831,62 +1049,98 @@ def _limpar_enquete_multipla(md, idioma="pt"):
         escolhido = next((b for b in blocos if len(b[1]) >= 2), None) or (blocos[0] if blocos else None)
         if escolhido and escolhido[1]:
             p_txt = escolhido[0]
+            pergunta_mantida = " ".join(l.strip() for l in p_txt if l.strip())[:100]
             s["linhas"] = [f"## {canon}", ""] + p_txt + [""] + escolhido[1]
             alterou = True
-    return juntar_secoes(pre, secoes), alterou
+    return juntar_secoes(pre, secoes), alterou, pergunta_mantida
 
 
 def _substituir_enquete_incompleta(md, idioma, gerar=None):
     """Substitui um bloco de enquete quebrado (< 2 opções) por uma enquete válida (IA ou fallback)."""
     pre, secoes = dividir_secoes(md)
     sem_enq = juntar_secoes(pre, [s for s in secoes if not _eh_enquete(s)])
-    bloco, origem = None, ""
+    bloco, origem, usou_ia = None, "", False
     if gerar:
         try:
             bloco = _montar_bloco_enquete(gerar(_contexto_para_enquete(sem_enq), PROMPT_ENQUETE[idioma]), idioma)
-            origem = "recriada pela IA a partir da pauta"
+            if bloco:
+                origem = "recriada pela IA a partir da pauta"
+                usou_ia = True
         except Exception:
             bloco = None
     if not bloco:
         bloco = enquete_de_fallback(sem_enq, idioma)
         origem = "recriada com as manchetes do dia (IA indisponível)"
     if not bloco:
-        return md, None, ""
-    return (sem_enq.rstrip() + "\n\n" + bloco).strip(), bloco, origem
+        return md, None, "", False
+    return (sem_enq.rstrip() + "\n\n" + bloco).strip(), bloco, origem, usou_ia
 
 
-def aplicar_dupla_verificacao(md, entrada="", idioma="pt", gerar=None, extrair_data=None, reparar=None):
+def aplicar_dupla_verificacao(md, entrada="", idioma="pt", gerar=None, extrair_data=None, reparar=None, notificar=None):
     """Executa todas as regras sobre o Markdown final. Devolve (md_corrigido, RelatorioValidacao).
 
     - `gerar(conteudo, prompt) -> str`: função de IA para criar/recriar a enquete quando faltar (opcional).
     - `extrair_data(texto) -> date|None`: parser de data para conferir/reparar o cabeçalho (opcional).
     - `reparar(conteudo, prompt) -> str`: função de IA para corrigir mistura de idioma ou omissões (opcional).
+    - `notificar(evento, regra, **dados)`: callback para acompanhar o que foi encontrado e corrigido em tempo real.
     """
     rel = RelatorioValidacao()
     md = (md or "").strip()
 
+    def registrar(regra, status, detalhe="", encontrado="", corrigido="", usou_ia=False):
+        rel.add(regra, status, detalhe=detalhe, encontrado=encontrado, corrigido=corrigido)
+        if status == CORRIGIDO:
+            _emitir(notificar, "corrigido", regra, encontrado=encontrado, corrigido=corrigido, usou_ia=usou_ia)
+        elif status in (AVISO, FALHA):
+            _emitir(notificar, "aviso", regra, encontrado=encontrado or detalhe, status=status)
+
     # 1. Cabeçalho de data e H1 único
-    md, status_cab, det_cab = _corrigir_cabecalho(md, entrada, idioma, extrair_data)
-    rel.add("Cabeçalho de data", status_cab, det_cab)
+    md, status_cab, det_cab, enc_cab, corr_cab = _corrigir_cabecalho(md, entrada, idioma, extrair_data)
+    registrar("Cabeçalho de data", status_cab, detalhe=det_cab, encontrado=enc_cab, corrigido=corr_cab)
 
     # 2. Links e imagens (correção segura)
-    md, n_links = remover_links_e_imagens(md)
-    if n_links:
-        rel.add("Links e imagens", CORRIGIDO, f"{n_links} link(s)/imagem(ns) crus removidos (não narráveis)")
+    md, info_links = _remover_links_e_imagens_detalhado(md)
+    if info_links["total"]:
+        partes_enc, partes_corr = [], []
+        if info_links["n_links_md"]:
+            partes_enc.append(f"{info_links['n_links_md']} link(s) Markdown ({_amostra(info_links['links_md'], 2)})")
+            partes_corr.append("links convertidos em texto puro")
+        if info_links["n_imgs"]:
+            partes_enc.append(f"{info_links['n_imgs']} imagem(ns) Markdown")
+            partes_corr.append("marcações de imagem removidas")
+        if info_links["n_urls"]:
+            partes_enc.append(f"{info_links['n_urls']} URL(s) crua(s) ({_amostra(info_links['urls_cruas'], 2)})")
+            partes_corr.append("URLs cruas apagadas")
+        registrar("Links e imagens", CORRIGIDO, encontrado=", ".join(partes_enc), corrigido="; ".join(partes_corr))
     else:
-        rel.add("Links e imagens", OK, "nenhum link cru no texto")
+        registrar("Links e imagens", OK, "nenhum link cru no texto")
 
     # 3. Tabelas → tópicos narrativos
-    md, n_tab = converter_tabelas_em_topicos(md, idioma)
-    if n_tab:
-        rel.add("Tabelas → tópicos", CORRIGIDO, f"{n_tab} tabela(s) convertida(s) em tópicos de locução")
+    md, info_tab = _converter_tabelas_detalhado(md, idioma)
+    if info_tab["convertidas"]:
+        amostra_rot = _amostra(info_tab["rotulos"], 4, aspas=False)
+        sufixo_rot = f": {amostra_rot}" if amostra_rot else ""
+        registrar(
+            "Tabelas → tópicos", CORRIGIDO,
+            encontrado=f"{info_tab['convertidas']} tabela(s) Markdown ({info_tab['linhas']} linha(s){sufixo_rot})",
+            corrigido=f"convertida(s) em {info_tab['linhas']} tópico(s) narrativo(s) para locução",
+        )
     else:
-        rel.add("Tabelas → tópicos", OK, "nenhuma tabela crua")
+        registrar("Tabelas → tópicos", OK, "nenhuma tabela crua")
 
     # 4. Ruído residual (remove linhas/CTAs promocionais e recorre à IA se sobrar trecho embutido)
-    md, n_ruido = remover_ruido_residual(md)
+    md, info_ruido = _remover_ruido_detalhado(md)
+    n_ruido = info_ruido["removidos"]
+    amostras_ruido = list(info_ruido["amostras"])
     ruidos = sorted({m.group(0).strip() for m in _RE_RUIDO.finditer(md)})
+    usou_ia_ruido = False
     if ruidos and reparar:
+        _emitir(
+            notificar, "ia_inicio", "Ruído (anúncio/paywall)",
+            encontrado=f"chamada(s) promocional(is)/paywall embutida(s): {_amostra(ruidos, 3)}",
+            acao="removendo trechos promocionais com IA...",
+            etapa="🔧 removendo ruído com IA",
+        )
         try:
             prompt_ruido = (
                 "Remova apenas as chamadas promocionais, de assinatura ou paywall residuais do Markdown abaixo "
@@ -896,84 +1150,171 @@ def aplicar_dupla_verificacao(md, entrada="", idioma="pt", gerar=None, extrair_d
             if cand_ruido and contar_noticias(cand_ruido) >= contar_noticias(md) and not _RE_RUIDO.search(cand_ruido):
                 md = cand_ruido
                 n_ruido += len(ruidos)
+                amostras_ruido.extend(ruidos)
                 ruidos = []
+                usou_ia_ruido = True
         except Exception:
             pass
     if ruidos:
-        rel.add("Ruído (anúncio/paywall)", AVISO, "trechos suspeitos: " + ", ".join(f"'{r}'" for r in ruidos[:4]))
+        registrar("Ruído (anúncio/paywall)", AVISO, encontrado=f"trechos suspeitos: {_amostra(ruidos, 4)}")
     elif n_ruido:
-        rel.add("Ruído (anúncio/paywall)", CORRIGIDO, f"{n_ruido} trecho(s) de publicidade/paywall removidos")
+        registrar(
+            "Ruído (anúncio/paywall)", CORRIGIDO,
+            encontrado=f"{n_ruido} trecho(s) de publicidade/paywall ({_amostra(amostras_ruido, 3)})",
+            corrigido="removido(s) automaticamente" + (" com apoio de IA" if usou_ia_ruido else ""),
+            usou_ia=usou_ia_ruido,
+        )
     else:
-        rel.add("Ruído (anúncio/paywall)", OK, "sem publicidade, paywall ou sumários")
+        registrar("Ruído (anúncio/paywall)", OK, "sem publicidade, paywall ou sumários")
 
     # 5. Promove ### → ## caso nenhuma seção ## de notícia exista ainda
-    md, n_promovidos = _promover_subtitulos_se_sem_noticias(md)
+    md, titulos_promovidos = _promover_subtitulos_se_sem_noticias(md)
 
     # 6. Idioma (corrige com IA quando detecta mistura)
     nome_regra_idioma = "Idioma (100% inglês)" if idioma == "en" else "Idioma (sem inglês misturado)"
     prob_idioma, det_idioma = _diagnostico_idioma(md, idioma)
-    if prob_idioma and reparar:
-        md, corrigiu_id = _reparar_idioma_com_ia(md, idioma, reparar)
-        if corrigiu_id:
-            rel.add(nome_regra_idioma, CORRIGIDO, "mistura de idioma corrigida automaticamente com IA")
+    if prob_idioma:
+        afetadas = _secoes_com_problema_idioma(md, idioma)
+        secoes_str = _amostra([t for t, _ in afetadas], 2)
+        enc_idioma = det_idioma + (f" na(s) seção(ões) {secoes_str}" if secoes_str else "")
+        if reparar:
+            _emitir(
+                notificar, "ia_inicio", nome_regra_idioma,
+                encontrado=enc_idioma,
+                acao="corrigindo mistura de idioma com IA...",
+                etapa="🔧 corrigindo idioma com IA",
+            )
+            md, corrigiu_id, corr_idioma = _reparar_idioma_com_ia(md, idioma, reparar)
+            if corrigiu_id:
+                registrar(nome_regra_idioma, CORRIGIDO, encontrado=enc_idioma, corrigido=corr_idioma, usou_ia=True)
+            else:
+                registrar(nome_regra_idioma, AVISO, encontrado=enc_idioma)
         else:
-            rel.add(nome_regra_idioma, AVISO, det_idioma)
-    elif prob_idioma:
-        rel.add(nome_regra_idioma, AVISO, det_idioma)
+            registrar(nome_regra_idioma, AVISO, encontrado=enc_idioma)
     else:
-        rel.add(nome_regra_idioma, OK, det_idioma)
+        registrar(nome_regra_idioma, OK, det_idioma)
 
     # 7. Integridade (filtra falsos positivos de timestamps/metadados; recupera com IA se ainda faltar)
     if entrada:
         status_int, det_int = checar_integridade(entrada, md)
         if status_int == AVISO and reparar:
-            md_rec, pct_antes, pct_depois, melhorou = _reparar_integridade_com_ia(md, entrada, idioma, reparar)
+            pct_antes, presentes_antes, faltantes_antes, _, _ = _analisar_integridade(entrada, md)
+            total_in = len(presentes_antes) + len(faltantes_antes)
+            enc_int = (
+                f"{pct_antes}% dos números da fonte ({len(presentes_antes)}/{total_in}) — "
+                f"{len(faltantes_antes)} ausente(s) ({_amostra(faltantes_antes.values(), 6, aspas=False)})"
+            )
+            _emitir(
+                notificar, "ia_inicio", "Integridade (números)",
+                encontrado=enc_int,
+                acao="restaurando trechos e números omitidos com IA...",
+                etapa=f"🔧 restaurando números omitidos ({pct_antes}%)",
+            )
+            md_rec, _, _, melhorou, det_rec, faltantes_depois = _reparar_integridade_com_ia(md, entrada, idioma, reparar)
             if melhorou:
                 md = md_rec
                 status_int, det_int = checar_integridade(entrada, md)
                 if status_int == OK:
-                    status_int = CORRIGIDO
-                    det_int = f"omissões restauradas com IA ({pct_antes}% → {pct_depois}% dos números)"
+                    registrar("Integridade (números)", CORRIGIDO, encontrado=enc_int, corrigido=det_rec, usou_ia=True)
                 else:
-                    det_int += f" (parcialmente recuperado de {pct_antes}%)"
-        rel.add("Integridade (números)", status_int, det_int)
+                    faltam_str = _amostra(faltantes_depois.values(), 4, aspas=False)
+                    sufixo_falt = f"; ainda faltam: {faltam_str}" if faltam_str else ""
+                    registrar(
+                        "Integridade (números)", AVISO,
+                        encontrado=f"recuperado parcialmente com IA ({det_rec}){sufixo_falt}",
+                    )
+            else:
+                registrar("Integridade (números)", AVISO, encontrado=enc_int)
+        elif status_int == AVISO:
+            registrar("Integridade (números)", AVISO, encontrado=det_int)
+        else:
+            registrar("Integridade (números)", OK, det_int)
 
     # 8. Bloco final: Voz dos Ouvintes + Enquete (reordena e padroniza)
     md, info = reorganizar_bloco_final(md, idioma)
     titulo_voz, titulo_enq = TITULO_VOZ[idioma], TITULO_ENQUETE[idioma]
     if info["voz"]:
-        extra = f" · {info['trocas_ouvintes']} menção(ões) a leitores → ouvintes" if info["trocas_ouvintes"] else ""
-        status = CORRIGIDO if (info["voz"] > 1 or info["trocas_ouvintes"]) else OK
-        rel.add(titulo_voz, status, f"{info['voz']} bloco(s) de enquete anterior/comentários{extra}")
+        houve_renome_voz = any(t.lower() != titulo_voz.lower() for t in info["titulos_voz"])
+        if info["voz"] > 1 or info["trocas_ouvintes"] or houve_renome_voz:
+            partes_enc, partes_corr = [], []
+            if info["voz"] > 1 or houve_renome_voz:
+                partes_enc.append(f"{info['voz']} bloco(s) ({_amostra(info['titulos_voz'], 3)})")
+                partes_corr.append(
+                    f"unificado(s) em '## {titulo_voz}'" if info["voz"] > 1 else f"padronizado em '## {titulo_voz}'"
+                )
+            if info["trocas_ouvintes"]:
+                ex_tr = _amostra(info["exemplos_trocas"], 3, aspas=False)
+                partes_enc.append(f"{info['trocas_ouvintes']} termo(s) de newsletter ({ex_tr})")
+                partes_corr.append("adaptado para linguagem de áudio")
+            registrar(titulo_voz, CORRIGIDO, encontrado="; ".join(partes_enc), corrigido="; ".join(partes_corr))
+        else:
+            registrar(titulo_voz, OK, f"1 bloco em '## {titulo_voz}' (já adaptado para áudio)")
     else:
-        rel.add(titulo_voz, OK, "fonte sem comentários/resultados anteriores (opcional)")
+        registrar(titulo_voz, OK, "fonte sem comentários/resultados anteriores (opcional)")
 
     # 9. Enquete do Dia (obrigatória; recria se faltar ou vier quebrada, unifica se múltipla)
     if info["tem_enquete"]:
         if info["opcoes_enquete"] < 2:
-            md_novo, bloco, origem = _substituir_enquete_incompleta(md, idioma, gerar)
+            enc_enq = f"enquete '{info['titulo_enquete_original']}' com apenas {info['opcoes_enquete']} opção(ões)"
+            if gerar:
+                _emitir(
+                    notificar, "ia_inicio", titulo_enq,
+                    encontrado=enc_enq,
+                    acao=f"recriando {titulo_enq} com IA...",
+                    etapa=f"🗳 recriando {titulo_enq} com IA",
+                )
+            md_novo, bloco, origem, usou_ia_enq = _substituir_enquete_incompleta(md, idioma, gerar)
             if bloco:
                 md = md_novo
                 n_op = sum(1 for l in bloco.split("\n") if _RE_BULLET.match(l))
-                rel.add(titulo_enq, CORRIGIDO, f"enquete incompleta → {origem} ({n_op} opções)")
+                perg = _extrair_pergunta_enquete(bloco)
+                corr_enq = f"{origem} ({n_op} opções" + (f": '{perg}'" if perg else "") + ")"
+                registrar(titulo_enq, CORRIGIDO, encontrado=enc_enq, corrigido=corr_enq, usou_ia=usou_ia_enq)
             else:
-                rel.add(titulo_enq, AVISO, f"enquete com só {info['opcoes_enquete']} opção(ões)")
+                registrar(titulo_enq, AVISO, encontrado=enc_enq + " e não foi possível recriar")
         elif info["perguntas_enquete"] > 1:
-            md, unificada = _limpar_enquete_multipla(md, idioma)
+            enc_enq = (
+                f"{info['perguntas_enquete']} enquetes no bloco '{info['titulo_enquete_original']}' "
+                f"({info['opcoes_enquete']} opções no total)"
+            )
+            md, unificada, perg = _limpar_enquete_multipla(md, idioma)
             if unificada:
                 _, info_pos = reorganizar_bloco_final(md, idioma)
-                rel.add(titulo_enq, CORRIGIDO, f"múltiplas enquetes unificadas ({info_pos['opcoes_enquete']} opções)")
+                corr_enq = (
+                    f"mantida apenas a 1ª enquete em '## {titulo_enq}' ({info_pos['opcoes_enquete']} opções"
+                    + (f": '{perg}'" if perg else "") + ")"
+                )
+                registrar(titulo_enq, CORRIGIDO, encontrado=enc_enq, corrigido=corr_enq)
             else:
-                rel.add(titulo_enq, AVISO, f"{info['perguntas_enquete']} enquetes no mesmo bloco ({info['opcoes_enquete']} opções)")
+                registrar(titulo_enq, AVISO, encontrado=enc_enq)
+        elif info["enquete_renomeada"] or info["enquete_duplicada"]:
+            enc_parts = []
+            if info["enquete_renomeada"]:
+                enc_parts.append(f"título fora do padrão ('{info['titulo_enquete_original']}')")
+            if info["enquete_duplicada"]:
+                enc_parts.append("mais de uma seção de enquete separada")
+            registrar(
+                titulo_enq, CORRIGIDO,
+                encontrado="; ".join(enc_parts),
+                corrigido=f"padronizado para '## {titulo_enq}' ({info['opcoes_enquete']} opções)",
+            )
         else:
-            rel.add(titulo_enq, CORRIGIDO if info["enquete_renomeada"] else OK,
-                    f"presente com {info['opcoes_enquete']} opções" + (" (título padronizado)" if info["enquete_renomeada"] else ""))
+            registrar(titulo_enq, OK, f"presente com {info['opcoes_enquete']} opções")
     else:
-        bloco, origem = None, ""
+        enc_enq = "edição sem seção de enquete"
+        bloco, origem, usou_ia_enq = None, "", False
         if gerar:
+            _emitir(
+                notificar, "ia_inicio", titulo_enq,
+                encontrado=enc_enq,
+                acao=f"criando {titulo_enq} com IA a partir da pauta...",
+                etapa=f"🗳 criando {titulo_enq} com IA",
+            )
             try:
                 bloco = _montar_bloco_enquete(gerar(_contexto_para_enquete(md), PROMPT_ENQUETE[idioma]), idioma)
-                origem = "criada pela IA a partir da pauta"
+                if bloco:
+                    origem = "criada pela IA a partir da pauta"
+                    usou_ia_enq = True
             except Exception:
                 bloco = None
         if not bloco:
@@ -982,25 +1323,44 @@ def aplicar_dupla_verificacao(md, entrada="", idioma="pt", gerar=None, extrair_d
         if bloco:
             md = md.rstrip() + "\n\n" + bloco
             n_op = sum(1 for l in bloco.split("\n") if _RE_BULLET.match(l))
-            rel.add(titulo_enq, CORRIGIDO, f"fonte sem enquete → {origem} ({n_op} opções)")
+            perg = _extrair_pergunta_enquete(bloco)
+            corr_enq = f"{origem} ({n_op} opções" + (f": '{perg}'" if perg else "") + ")"
+            registrar(titulo_enq, CORRIGIDO, encontrado=enc_enq, corrigido=corr_enq, usou_ia=usou_ia_enq)
         else:
-            rel.add(titulo_enq, AVISO, "não foi possível criar a enquete (pauta muito curta)")
+            registrar(titulo_enq, AVISO, encontrado="edição sem enquete e pauta muito curta para criar uma")
 
     # 10. Notícias extraídas + Ordem final
     _, secoes = dividir_secoes(md)
     n_noticias = sum(1 for s in secoes if _eh_secao_noticia(s))
     if n_noticias:
-        det_not = f"{n_noticias} seção(ões) ## de conteúdo" + (f" ({n_promovidos} título(s) ajustado(s))" if n_promovidos else "")
-        rel.add("Notícias extraídas", CORRIGIDO if n_promovidos else OK, det_not)
+        if titulos_promovidos:
+            registrar(
+                "Notícias extraídas", CORRIGIDO,
+                encontrado=f"nenhuma seção '##' (notícias estavam em '###': {_amostra(titulos_promovidos, 3)})",
+                corrigido=f"{len(titulos_promovidos)} subtítulo(s) '###' promovido(s) para '##' ({n_noticias} seção(ões) de conteúdo)",
+            )
+        else:
+            registrar("Notícias extraídas", OK, f"{n_noticias} seção(ões) ## de conteúdo")
     else:
-        rel.add("Notícias extraídas", FALHA, "nenhuma seção ## de notícia encontrada")
+        registrar("Notícias extraídas", FALHA, encontrado="nenhuma seção ## de notícia encontrada")
 
     ultima = secoes[-1]["titulo"] if secoes else ""
     if _RE_ENQUETE.match(ultima):
-        rel.add("Ordem do bloco final", CORRIGIDO if info["mudou_ordem"] else OK,
-                ("reordenado: " if info["mudou_ordem"] else "") + f"notícias → {titulo_voz if info['voz'] else '…'} → {titulo_enq}")
+        if info["mudou_ordem"]:
+            fora = _amostra(info.get("fora_de_ordem") or [], 3)
+            enc_ord = (
+                f"seção(ões) fora de posição ({fora}) antes do fim das notícias"
+                if fora else "seções finais fora da ordem esperada"
+            )
+            registrar(
+                "Ordem do bloco final", CORRIGIDO,
+                encontrado=enc_ord,
+                corrigido=f"reordenado para notícias → {titulo_voz if info['voz'] else '…'} → {titulo_enq}",
+            )
+        else:
+            registrar("Ordem do bloco final", OK, f"notícias → {titulo_voz if info['voz'] else '…'} → {titulo_enq}")
     else:
-        rel.add("Ordem do bloco final", AVISO, f"última seção é '{ultima}' (esperado: {titulo_enq})")
+        registrar("Ordem do bloco final", AVISO, encontrado=f"última seção é '{ultima}' (esperado: {titulo_enq})")
 
     ordem = ["Cabeçalho", "Notícias", "Integridade", "Tabelas", "Links", "Ruído", "Idioma",
              titulo_voz, titulo_enq, "Ordem"]
