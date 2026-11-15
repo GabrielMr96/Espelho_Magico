@@ -33,8 +33,12 @@ TITULO_ENQUETE = {"pt": "Enquete do Dia", "en": "Daily Poll"}
 TITULO_VOZ = {"pt": "Voz dos Ouvintes", "en": "Listener Feedback"}
 
 _RE_H2 = re.compile(r"^##\s+(.+?)\s*$")
+_RE_CABECALHO_SEC = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
+_ENQUETE_NOME = (
+    r"(?:enquete(?:\s+(?:d[oe]\s+dia|de\s+hoje))?|daily\s+poll|poll(?:\s+of\s+the\s+day)?|today'?s\s+poll|the\s+poll)"
+)
 _RE_ENQUETE = re.compile(
-    r"^(enquete(\s+(d[oe]\s+dia|de\s+hoje))?|daily\s+poll|poll(\s+of\s+the\s+day)?|today'?s\s+poll|the\s+poll)\s*$",
+    rf"^{_ENQUETE_NOME}(?:\s*[/|—–\-]\s*{_ENQUETE_NOME})*\s*$",
     re.I,
 )
 _RE_VOZ = re.compile(
@@ -44,6 +48,7 @@ _RE_VOZ = re.compile(
     re.I,
 )
 _RE_BULLET = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+\S")
+_RE_BULLET_CAPTURA = re.compile(r"^([ \t]*)(?:[-*•]|\d+[.)])\s+(.+?)\s*$")
 _RE_LINHA_TABELA = re.compile(r"^\s*\|.*\|\s*$")
 _RE_SEPARADOR_TABELA = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$")
 _RE_IMAGEM_MD = re.compile(r"!\[[^\]]*\]\([^)]*\)")
@@ -66,28 +71,58 @@ _RE_LEIA_TAMBEM = re.compile(
     r"(?:\n(?:[ \t]*\n)?[ \t]*[-*•][ \t]+[^\n]+)*",
     re.I | re.M,
 )
+_RE_SECAO_RUIDO = re.compile(
+    r"^(?:"
+    r"Peak\s+Premium(?:\s*&\s*Advertising)?|"
+    r"Advertise\s+with\b.*|"
+    r"(?:[ÚU]ltima\s+chamada|Concorra\s+a|Sorteio)\b.*\biPhone\b.*|"
+    r"Programa\s+de\s+indica[cç][aã]o.*|"
+    r"Indique\s+(?:amigos|e\s+ganhe|o\s+the\s+news).*"
+    r")$",
+    re.I,
+)
+_RE_TITULO_PATROCINADOR = re.compile(
+    r"^(#{2,3}\s+.+?)\s*(?:\(\s*(?:ARQ|Oferecimento|Patroc[ií]nio|Publieditorial|Sponsored|Ad)\s*\)|"
+    r"[—\-–]\s*(?:Oferecimento|Patroc[ií]nio|Publieditorial)\b.*)$",
+    re.I,
+)
 _RE_RUIDO = re.compile(
     r"(?:\b(?:assine\s+(?:j[aá]|agora|a\s+pro)|assinatura\s+premium|"
     r"conte[uú]do\s+patrocinado|publieditorial|sponsored\s+content|"
     r"go\s+premium|upgrade\s+to\s+(?:pro|premium)|continue\s+lendo|keep\s+reading|"
-    r"indique\s+(?:um\s+amigo|e\s+ganhe)|refer\s+a\s+friend|use\s+o\s+cupom)\b|"
+    r"indique\s+(?:um\s+amigo|e\s+ganhe)|refer\s+a\s+friend|use\s+o\s+cupom|"
+    r"Try\s+Peak\s+Premium|Advertise\s+with\s+The\s+Peak|Head\s+Office|"
+    r"Taxas\s+e\s+ativos\s+no\s+ARQ|Investback\s+de\s+lan[cç]amento|"
+    r"Destaque\s+editorial|"
+    r"concorrer\s+a\s+(?:um|uma)\s+\*{0,2}iPhone\b|"
+    r"(?:para\s+)?receber\s+o\s+\*{0,2}the\s+news\*{0,2}\b|"
+    r"(?:registrando|batendo|bater)\s+(?:o\s+|seu\s+)\*{0,2}Streak\*{0,2}\b)\b|"
     r"^\s*(?:[-*•]\s*)?\*{0,2}(?:oferecimento|apresentado\s+por|sponsored\s+by|together\s+with|"
     r"presented\s+by|na\s+edi[cç][aã]o\s+de\s+hoje|in\s+today'?s\s+(?:edition|issue))\*{0,2}\s*:)",
     re.I | re.M,
 )
 _RE_RUIDO_LINHA = re.compile(
-    r"^\s*(?:[-*•>]\s*)?\*{0,2}(?:"
+    r"^\s*(?:[-*•>]\s*)?(?:\*{0,2}(?:"
     r"(?:oferecimento|apresentado\s+por|sponsored\s+by|together\s+with|"
-    r"presented\s+by|na\s+edi[cç][aã]o\s+de\s+hoje|in\s+today'?s\s+(?:edition|issue))\*{0,2}\s*:|"
+    r"presented\s+by|na\s+edi[cç][aã]o\s+de\s+hoje|in\s+today'?s\s+(?:edition|issue)|"
+    r"Try\s+Peak\s+Premium|Advertise\s+with(?:\s+The\s+Peak)?|Head\s+Office|"
+    r"Taxas\s+e\s+ativos\s+n[oa]\s+ARQ|Investback\s+de\s+lan[cç]amento|Cashback\s+de\s+lan[cç]amento|"
+    r"Destaque\s+editorial)\b[^:\n]*:?\*{0,2}|"
     r"(?:assine\s+(?:j[aá]|agora|a\s+pro)|assinatura\s+premium|conte[uú]do\s+patrocinado|"
     r"publieditorial|sponsored\s+content|go\s+premium|upgrade\s+to\s+(?:pro|premium)|"
     r"continue\s+lendo|keep\s+reading|indique\s+(?:um\s+amigo|e\s+ganhe)|"
-    r"refer\s+a\s+friend|use\s+o\s+cupom)\b)",
+    r"refer\s+a\s+friend|use\s+o\s+cupom)\b|"
+    r"Next\s+week,\s+a\s+(?:meditation|look|deep\s+dive|tour|preview)\s+on\b)|"
+    r".*?(?:concorrer\s+a\s+(?:um|uma)\s+\*{0,2}iPhone\b|"
+    r"indicando\b.*?\b(?:para\s+receber\s+o\s+\*{0,2}the\s+news\*{0,2}|\*{0,2}Streak\*{0,2})|"
+    r"(?:registrando|batendo|bater)\s+(?:o\s+|seu\s+)\*{0,2}Streak\*{0,2}\b|"
+    r"apenas\s+nas\s+pr[oó]ximas\s+\*{0,2}\d+\s*horas\*{0,2},?\s+o\s+\*{0,2}ARQ\*{0,2}\s+devolve\b))",
     re.I,
 )
 _RE_RUIDO_INLINE = re.compile(
-    r"\s*(?:[—\-–|]\s*|\(\s*)?\b(?:continue\s+lendo|keep\s+reading|assine\s+(?:j[aá]|agora|a\s+pro)|"
-    r"upgrade\s+to\s+(?:pro|premium)|go\s+premium|conte[uú]do\s+patrocinado|sponsored\s+content)\b"
+    r"\s*(?:[—\-–|]\s*|\(\s*)?(?:\b(?:continue\s+lendo|keep\s+reading|assine\s+(?:j[aá]|agora|a\s+pro)|"
+    r"upgrade\s+to\s+(?:pro|premium)|go\s+premium|conte[uú]do\s+patrocinado|sponsored\s+content)\b|"
+    r"Next\s+week,\s+a\s+(?:meditation|look|deep\s+dive|tour|preview)\s+on\b)"
     r"[^.!?\n]*[.!?\)]?",
     re.I,
 )
@@ -377,6 +412,8 @@ def _adaptar_ouvintes(linhas, idioma):
     trocas, exemplos = 0, []
     if idioma == "en":
         pares = [
+            (r"\b(?:Subscribe\s+to|Sign\s+up\s+for)\s+our\s+newsletters?\b", "Follow our shows"),
+            (r"\b(?:subscribe\s+to|sign\s+up\s+for)\s+our\s+newsletters?\b", "follow our shows"),
             (r"\bReaders\b", "Listeners"),
             (r"\breaders\b", "listeners"),
             (r"\bReader\b", "Listener"),
@@ -386,6 +423,10 @@ def _adaptar_ouvintes(linhas, idioma):
         ]
     else:
         pares = [
+            (r"\bAssinem\s+(?:as\s+nossas\s+|nossas\s+)newsletters\b", "Acompanhem os nossos programas"),
+            (r"\bassinem\s+(?:as\s+nossas\s+|nossas\s+)newsletters\b", "acompanhem os nossos programas"),
+            (r"\bAssine\s+(?:a\s+nossa\s+|nossa\s+)newsletter\b", "Acompanhe o nosso programa"),
+            (r"\bassine\s+(?:a\s+nossa\s+|nossa\s+)newsletter\b", "acompanhe o nosso programa"),
             (r"\bLeitores\b", "Ouvintes"),
             (r"\bleitores\b", "ouvintes"),
             (r"\bLeitor(a)?\b", "Ouvinte"),
@@ -460,18 +501,103 @@ def reorganizar_bloco_final(md, idioma="pt"):
     if enquetes:
         canon = TITULO_ENQUETE[idioma]
         principal = enquetes[0]
-        linhas = [f"## {canon}"] + principal["linhas"][1:]
         info["enquete_renomeada"] = principal["titulo"].lower() != canon.lower()
-        for extra in enquetes[1:]:
-            linhas += [""] + extra["linhas"][1:]
+        linhas_combinadas = []
+        for idx_e, s in enumerate(enquetes):
+            norm = _sem_rabo(_normalizar_linhas_enquete(s["linhas"][1:]))
+            if idx_e > 0:
+                linhas_combinadas.append("")
+            linhas_combinadas.extend(norm)
+        if len(enquetes) > 1:
+            escolhido = _escolher_bloco_enquete(_extrair_blocos_enquete(linhas_combinadas))
+            if escolhido and escolhido[1]:
+                p_txt, ops_txt = escolhido
+                linhas = [f"## {canon}"] + ([""] + p_txt if p_txt else []) + ["", *ops_txt]
+            else:
+                linhas = [f"## {canon}"] + linhas_combinadas
+        else:
+            linhas = [f"## {canon}"] + linhas_combinadas
         linhas = _sem_rabo(linhas)
         info["opcoes_enquete"] = sum(1 for l in linhas[1:] if _RE_BULLET.match(l))
         info["perguntas_enquete"] = _contar_blocos_de_opcoes(linhas[1:])
+        info["pergunta_enquete"] = _extrair_pergunta_enquete("\n".join(linhas))
         bloco_enquete = [{"titulo": canon, "linhas": linhas}]
 
     if corpo and (voz or enquetes):
         corpo[-1]["linhas"] = _sem_rabo(corpo[-1]["linhas"])
     return juntar_secoes(preambulo, corpo + bloco_voz + bloco_enquete), info
+
+
+def _indent_len(espacos):
+    return len(espacos.expandtabs(4))
+
+
+def _normalizar_linhas_enquete(linhas):
+    """Converte pergunta em bullet seguida de sub-bullets indentados em parágrafo normal + opções nível 0."""
+    saida, i, total = [], 0, len(linhas)
+    while i < total:
+        linha = linhas[i]
+        m = _RE_BULLET_CAPTURA.match(linha)
+        if m:
+            ind_pai = _indent_len(m.group(1))
+            j = i + 1
+            while j < total and not linhas[j].strip():
+                j += 1
+            m_sub = _RE_BULLET_CAPTURA.match(linhas[j]) if j < total else None
+            if m_sub and _indent_len(m_sub.group(1)) > ind_pai:
+                saida.append(m.group(2).strip())
+                if i + 1 < total and linhas[i + 1].strip():
+                    saida.append("")
+                k = i + 1
+                while k < total:
+                    lk = linhas[k]
+                    if not lk.strip():
+                        p = k + 1
+                        while p < total and not linhas[p].strip():
+                            p += 1
+                        mp = _RE_BULLET_CAPTURA.match(linhas[p]) if p < total else None
+                        if mp and _indent_len(mp.group(1)) > ind_pai:
+                            saida.append("")
+                            k += 1
+                            continue
+                        break
+                    mk = _RE_BULLET_CAPTURA.match(lk)
+                    if mk and _indent_len(mk.group(1)) > ind_pai:
+                        saida.append(re.sub(r"^[ \t]+", "", lk).rstrip())
+                        k += 1
+                        continue
+                    break
+                i = k
+                continue
+        saida.append(linha)
+        i += 1
+    return saida
+
+
+def _extrair_blocos_enquete(linhas):
+    """Separa pares `(linhas_pergunta, linhas_opcoes)` dentro de uma seção de enquete."""
+    blocos, pergunta, opcoes = [], [], []
+    for linha in linhas:
+        if _RE_BULLET.match(linha):
+            opcoes.append(linha)
+        elif opcoes:
+            blocos.append((pergunta, opcoes))
+            pergunta = [linha] if linha.strip() else []
+            opcoes = []
+        elif linha.strip():
+            pergunta.append(linha)
+    if opcoes or pergunta:
+        blocos.append((pergunta, opcoes))
+    return blocos
+
+
+def _escolher_bloco_enquete(blocos):
+    """Prefere enquete com 4+ opções quando houver alternativa menor (<= 3), senão a 1ª completa (>= 2)."""
+    validos = [b for b in blocos if len(b[1]) >= 2]
+    if not validos:
+        return blocos[0] if blocos else None
+    completos4 = [b for b in validos if len(b[1]) >= 4]
+    return completos4[0] if completos4 else validos[0]
 
 
 def _contar_blocos_de_opcoes(linhas):
@@ -560,6 +686,7 @@ def _filtrar_para_integridade(texto, eh_entrada=False):
     texto = _RE_IMG_DESC.sub(" ", texto)
     if eh_entrada:
         texto = _RE_LEIA_TAMBEM.sub(" ", texto)
+        texto, _ = remover_ruido_residual(texto)
     texto = _RE_GERADO_EM.sub(" ", texto)
     texto = _RE_TEMPO_LEITURA.sub(" ", texto)
     texto = _RE_HORA.sub(" ", texto)
@@ -695,11 +822,38 @@ def _corrigir_cabecalho(md, entrada="", idioma="pt", extrair_data=None):
 
 
 def _remover_ruido_detalhado(md):
-    """Remove linhas de anúncio/paywall/CTA residuais e CTAs embutidos seguros, retornando amostras."""
+    """Remove seções comerciais, sufixos de patrocinador, linhas de CTA/sorteio e trechos embutidos seguros."""
     removidos = 0
     amostras = []
-    novas = []
+    linhas_filtradas = []
+    nivel_ignorado = None
+
     for linha in md.split("\n"):
+        m_cab = _RE_CABECALHO_SEC.match(linha)
+        if m_cab:
+            nivel = len(m_cab.group(1))
+            titulo_limpo = re.sub(r"[*_`]+", "", m_cab.group(2)).strip()
+            if nivel_ignorado is not None:
+                if nivel <= nivel_ignorado:
+                    nivel_ignorado = None
+                else:
+                    continue
+            if nivel in (2, 3) and _RE_SECAO_RUIDO.match(titulo_limpo):
+                nivel_ignorado = nivel
+                removidos += 1
+                amostras.append(f"seção '{titulo_limpo[:45]}'")
+                continue
+        elif nivel_ignorado is not None:
+            continue
+        linhas_filtradas.append(linha)
+
+    novas = []
+    for linha in linhas_filtradas:
+        m_pat = _RE_TITULO_PATROCINADOR.match(linha)
+        if m_pat:
+            removidos += 1
+            amostras.append(linha.strip()[:60])
+            linha = m_pat.group(1).rstrip(" :-–—")
         if _RE_RUIDO_LINHA.match(linha):
             removidos += 1
             amostras.append(linha.strip()[:60])
@@ -976,8 +1130,10 @@ def _reparar_integridade_com_ia(md, entrada, idioma, reparar):
         instrucao = (
             "A dupla verificação detectou possível omissão de dados/números da fonte original "
             f"(ausentes: {lista_ausentes}). Compare o RASCUNHO ATUAL com os TRECHOS DA FONTE e devolva o "
-            "Markdown COMPLETO restaurando todos os fatos e números faltantes, mantendo o formato limpo de roteiro "
-            "(título #, seções ##, tópicos em vez de tabelas, sem URLs e preservando Enquete do Dia/Daily Poll ao final)."
+            "Markdown COMPLETO restaurando apenas os fatos e números editoriais faltantes, mantendo o formato limpo "
+            "de roteiro (título #, seções ##, tópicos em vez de tabelas, sem URLs e preservando Enquete do Dia/Daily Poll ao final). "
+            "NUNCA restaure anúncios, patrocínios, taxas promocionais de marcas (ex.: ARQ, investback), sorteios de iPhone, "
+            "planos de assinatura (ex.: Peak Premium), mídia kit ou endereços postais."
         )
         conteudo = f"<rascunho_atual>\n{md}\n</rascunho_atual>\n\n<trechos_fonte>\n{trechos}\n</trechos_fonte>"
     else:
@@ -985,8 +1141,10 @@ def _reparar_integridade_com_ia(md, entrada, idioma, reparar):
         instrucao = (
             "A dupla verificação detectou possível omissão de dados/números da fonte original "
             f"(ausentes: {lista_ausentes}). Com base nos TRECHOS DA FONTE, escreva SOMENTE as seções ## completas "
-            "que contêm esses números omitidos (mantendo o mesmo título ## exato se já existir na pauta para "
-            "completá-la, ou criando a seção ## omitida), em formato limpo para podcast (sem URLs nem tabelas)."
+            "que contêm esses números editoriais omitidos (mantendo o mesmo título ## exato se já existir na pauta para "
+            "completá-la, ou criando a seção ## omitida), em formato limpo para podcast (sem URLs nem tabelas). "
+            "NUNCA restaure anúncios, patrocínios, taxas promocionais de marcas (ex.: ARQ, investback), sorteios de iPhone, "
+            "planos de assinatura (ex.: Peak Premium), mídia kit ou endereços postais."
         )
         conteudo = (
             f"<titulos_ja_extraidos>\n{titulos_atuais}\n</titulos_ja_extraidos>\n\n"
@@ -1023,7 +1181,7 @@ def _extrair_pergunta_enquete(bloco):
 
 
 def _limpar_enquete_multipla(md, idioma="pt"):
-    """Mantém apenas uma enquete (primeira pergunta completa com opções) dentro do bloco Enquete do Dia."""
+    """Mantém apenas uma enquete válida (com normalização e preferência por 4 opções) dentro do bloco Enquete do Dia."""
     pre, secoes = dividir_secoes(md)
     canon = TITULO_ENQUETE[idioma]
     alterou = False
@@ -1031,26 +1189,12 @@ def _limpar_enquete_multipla(md, idioma="pt"):
     for s in secoes:
         if not _eh_enquete(s):
             continue
-        blocos = []
-        pergunta = []
-        opcoes = []
-        for linha in s["linhas"][1:]:
-            if _RE_BULLET.match(linha):
-                opcoes.append(linha)
-            elif opcoes:
-                blocos.append((pergunta, opcoes))
-                pergunta = [linha] if linha.strip() else []
-                opcoes = []
-            elif linha.strip():
-                pergunta.append(linha)
-        if opcoes or pergunta:
-            blocos.append((pergunta, opcoes))
-
-        escolhido = next((b for b in blocos if len(b[1]) >= 2), None) or (blocos[0] if blocos else None)
+        blocos = _extrair_blocos_enquete(_normalizar_linhas_enquete(s["linhas"][1:]))
+        escolhido = _escolher_bloco_enquete(blocos)
         if escolhido and escolhido[1]:
             p_txt = escolhido[0]
             pergunta_mantida = " ".join(l.strip() for l in p_txt if l.strip())[:100]
-            s["linhas"] = [f"## {canon}", ""] + p_txt + [""] + escolhido[1]
+            s["linhas"] = [f"## {canon}"] + ([""] + p_txt if p_txt else []) + ["", *escolhido[1]]
             alterou = True
     return juntar_secoes(pre, secoes), alterou, pergunta_mantida
 
@@ -1281,7 +1425,7 @@ def aplicar_dupla_verificacao(md, entrada="", idioma="pt", gerar=None, extrair_d
             if unificada:
                 _, info_pos = reorganizar_bloco_final(md, idioma)
                 corr_enq = (
-                    f"mantida apenas a 1ª enquete em '## {titulo_enq}' ({info_pos['opcoes_enquete']} opções"
+                    f"mantida apenas uma enquete em '## {titulo_enq}' ({info_pos['opcoes_enquete']} opções"
                     + (f": '{perg}'" if perg else "") + ")"
                 )
                 registrar(titulo_enq, CORRIGIDO, encontrado=enc_enq, corrigido=corr_enq)
@@ -1293,10 +1437,17 @@ def aplicar_dupla_verificacao(md, entrada="", idioma="pt", gerar=None, extrair_d
                 enc_parts.append(f"título fora do padrão ('{info['titulo_enquete_original']}')")
             if info["enquete_duplicada"]:
                 enc_parts.append("mais de uma seção de enquete separada")
+            perg = info.get("pergunta_enquete") or ""
+            corr_enq = (
+                f"mantida apenas uma enquete em '## {titulo_enq}' ({info['opcoes_enquete']} opções"
+                + (f": '{perg}'" if perg else "") + ")"
+                if info["enquete_duplicada"]
+                else f"padronizado para '## {titulo_enq}' ({info['opcoes_enquete']} opções)"
+            )
             registrar(
                 titulo_enq, CORRIGIDO,
                 encontrado="; ".join(enc_parts),
-                corrigido=f"padronizado para '## {titulo_enq}' ({info['opcoes_enquete']} opções)",
+                corrigido=corr_enq,
             )
         else:
             registrar(titulo_enq, OK, f"presente com {info['opcoes_enquete']} opções")

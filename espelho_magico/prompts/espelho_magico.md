@@ -15,8 +15,9 @@ Sua missão é transformar a newsletter fornecida em `<documento_entrada>` em um
    - PROIBIDO INJETAR PALAVRAS EM OUTRO IDIOMA (CODE-SWITCHING): em textos em português, NUNCA troque verbos, particípios ou adjetivos por equivalentes em inglês no meio da frase (ex.: é terminantemente proibido gerar construções quebradas como *"é directed por"*, *"são calculated"*, *"versões exaggerated"*, *"tendo declared"*). Se o texto bruto já vier com um verbo corrompido por falha de tradução ou duas palavras coladas sem espaço por erro de HTML, corrija pontualmente apenas esse defeito mantendo todo o resto literal.
    - FLUXO DE PARÁGRAFOS: una quebras de linha artificiais geradas pela conversão de e-mail (`\n` no meio de frases) para formar parágrafos contínuos e naturais.
 
-3. JUNÇÃO DE TRECHOS SEPARADOS DA MESMA NOTÍCIA:
-   - Se uma mesma pauta estiver dividida em dois pontos do mesmo e-mail (ex.: contexto na abertura e continuação num gráfico ou seção mais abaixo), unifique todos os parágrafos sob um único `##`, mantendo 100% das informações sem repetir frases idênticas.
+3. JUNÇÃO DE TRECHOS SEPARADOS DA MESMA NOTÍCIA, 3ª PESSOA E REMOÇÃO DE TEASERS:
+   - Se uma mesma pauta ou coluna de fim de semana estiver dividida em dois pontos do mesmo e-mail (ex.: abertura/relato introdutório no início e continuação num gráfico ou seção mais abaixo no *The Peak*), unifique todos os parágrafos sob um único `##`, mantendo 100% das informações sem repetir frases idênticas.
+   - PROIBIDO PRIMEIRA PESSOA DO COLUNISTA E TEASERS DE "PRÓXIMA SEMANA": o texto NÃO é narrado pelo autor original do e-mail. Converta sempre relatos em 1ª pessoa do colunista (*"Last winter, I was part of a girls' trip..."*, *"I met one such agent..."*, *"Nós testamos..."*) para 3ª pessoa (*"Segundo relato da reportagem..."*, *"According to a report..."*), e apague avisos editoriais sobre futuras edições (*"Next week, a meditation on..."*, *"Na próxima semana..."*).
    - Se o final de uma matéria repetir os mesmos dados do primeiro parágrafo apenas como chamada promocional para vídeo ou entrevista externa (ex.: *"We paid a visit to X's office to find out whether..."*), remova apenas esse convite redundante.
 </fidelidade_textual>
 
@@ -42,9 +43,10 @@ Sua missão é transformar a newsletter fornecida em `<documento_entrada>` em um
      a) `## Voz dos Ouvintes` (ou `## Listener Feedback` em inglês):
         * Se a fonte trouxer resultados de enquetes anteriores e/ou comentários de leitores (mesmo que apareçam no início ou meio do e-mail original), mova-os para cá.
         * Mantenha a pergunta anterior, TODOS os percentuais (incluindo `Imparcial`, `Direita`, `Esquerda` e total de votos) e TODOS os comentários de leitores com suas tags.
-        * Adapte automaticamente no texto qualquer referência a *"leitores"*, *"e-mail"* ou ao nome da newsletter original (*"The News"*, *"The Peak"*) para *"ouvintes"* e *"programa"*. Descarte apenas o formulário vazio de avaliação diária (*"Na sua visão, a edição de hoje foi imparcial?"* sem votos) e recados soltos de expediente (*"gostei do estagiário"*).
-     b) `## Enquete do Dia` (ou `## Daily Poll` em inglês) — **100% OBRIGATÓRIA EM TODA EXTRAÇÃO**:
-        * Se a fonte original já tiver uma enquete temática do dia (`Enquete do Dia` / `Poll`), mova-a para ser a **última seção `##` do arquivo** com todas as suas opções.
+        * Adapte automaticamente no texto qualquer referência a *"leitores"*, *"e-mail"* ou ao nome da newsletter original (*"The News"*, *"The Peak"*) para *"ouvintes"* e *"programa"*, e converta convites como *"assinem as nossas newsletters"* para *"acompanhem os nossos programas"*. Descarte apenas o formulário vazio de avaliação diária (*"Na sua visão, a edição de hoje foi imparcial?"* sem votos) e recados soltos de expediente (*"gostei do estagiário"*).
+     b) `## Enquete do Dia` (ou `## Daily Poll` em inglês) — **100% OBRIGATÓRIA E ÚNICA EM TODA EXTRAÇÃO**:
+        * PROIBIDO TÍTULO BILÍNGUE OU ENQUETE DUPLICADA: nunca gere títulos com barra (proibido `## Daily Poll / Enquete do Dia`). Use exclusivamente `## Enquete do Dia` em documentos em português ou `## Daily Poll` em documentos em inglês, e garanta apenas **uma única** seção de enquete no documento inteiro.
+        * Se a fonte original já tiver uma enquete temática do dia (`Enquete do Dia` / `Poll`), mova-a para ser a **última seção `##` do arquivo** com a pergunta em texto normal (sem `- ` na frente da pergunta) seguida pelas opções em bullets (`- ...`).
         * **SE A FONTE NÃO TIVER ENQUETE DO DIA:** você DEVE CRIAR obrigatoriamente, como última seção do documento, uma `## Enquete do Dia` (ou `## Daily Poll` em inglês) ácida, inteligente e provocativa sobre a notícia mais polêmica ou impactante da edição, contendo a pergunta e **4 opções de voto (`- ...`)** contrastantes e afiadas para os apresentadores debaterem no encerramento.
 
 5. CONTEÚDO CORTADO POR PAYWALL (FECHAMENTO NATURAL):
@@ -67,8 +69,9 @@ Sua missão é transformar a newsletter fornecida em `<documento_entrada>` em um
    - Se uma seção inteira (`Peak Picks`, `Quick Takes`, `Veja também`, `Leia mais sobre...`) tiver apenas links órfãos sem fatos explicados, EXCLUA a seção inteira.
    - Se um parágrafo válido terminar com âncora órfã ou auto-referência de portal (*"Aqui está a diretriz completa"*, *"Confira o trailer abaixo"*, *"Em nossa review, dizemos..."*), remova apenas essa frase-âncora ou adapte a referência sem primeira pessoa institucional.
 
-3. PUBLICIDADE E EXPEDIENTE:
-   - Exclua anúncios, patrocínios e publieditoriais (*"Oferecimento"*, *"Apresentado por"*, *"Sponsored by"*, *"Together with"*, cupons de loja), sumários iniciais (*"Na edição de hoje:"*), cabeçalhos/rodapés de e-mail, botões de compartilhamento, programas de indicação e siglas finais de redatores (ex.: `— QH`, `— LA`).
+3. PUBLICIDADE, AUTOPROMOÇÃO, SORTEIOS E EXPEDIENTE:
+   - Exclua 100% de anúncios, patrocínios, autopromoção e rodapés de newsletter (*"Oferecimento"*, *"Apresentado por"*, *"Sponsored by"*, *"Together with"*, cupons de loja), sumários iniciais (*"Na edição de hoje:"*), cabeçalhos/rodapés de e-mail, botões de compartilhamento, siglas finais de redatores (ex.: `— QH`, `— LA`), avisos de **sorteio, programa de indicação ou Streak** (*"Última chamada: iPhone 18 Pro"*, *"concorrer a um iPhone"*, *"indicar amigos para receber o the news"*, *"registrando/batendo seu Streak"*), convites de assinatura/mídia kit (*"Peak Premium"*, *"Try Peak Premium"*, *"Advertise with The Peak"*) e **endereços físicos de sede** (*"Head Office: 68 Claremont Street..."*).
+   - MATÉRIAS PATROCINADAS COM ESTUDO OU DADO REAL: se uma pauta patrocinada trouxer pesquisa ou dado jornalístico legítimo (ex.: estudo da FGV EAESP patrocinado pelo ARQ), extraia **apenas** os fatos e números do estudo em si, removendo o nome do patrocinador do título `##` e descartando 100% dos tópicos comerciais sobre taxas da marca, cashback/investback e ofertas por tempo limitado (*"apenas nas próximas 48 horas"*). Se a matéria for puramente comercial sem estudo editorial relevante, descarte a seção inteira.
 
 4. IMAGENS (`[Imagem: ...]`):
    - Você não tem visão das imagens. Apague 100% de créditos de agências, fotógrafos ou reprodução (*"Getty Images"*, *"Globo | Reprodução"*, *"Divulgação"*, *"Foto: ..."*, *"Source: ..."*).

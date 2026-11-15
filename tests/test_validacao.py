@@ -409,3 +409,88 @@ def test_pipeline_loga_detalhes_dupla_verificacao(tmp_path, caplog):
     assert "[Integridade (números)]" in mensagens and "140" in mensagens and "100%" in mensagens
     assert "[Enquete do Dia]" in mensagens and "O resultado convenceu?" in mensagens
 
+
+def test_enquete_bilingue_com_pergunta_em_bullet_nao_duplica_e_deduplica_extra():
+    md_unico = (
+        "# November 14, 2026\n\n"
+        "## Travel Agents\n\nTravellers are using travel agents again.\n\n"
+        "## Daily Poll / Enquete do Dia\n\n"
+        "- How do you prefer to book your vacations?\n"
+        "  - Through a professional human travel agent\n"
+        "  - Using AI tools and online platforms\n"
+        "  - Doing all the planning and booking manually yourself\n"
+    )
+    chamadas_ia = []
+    final, rel = aplicar_dupla_verificacao(
+        md_unico,
+        idioma="en",
+        extrair_data=extrair_data_de_texto,
+        gerar=lambda c, p: chamadas_ia.append(p) or "## Daily Poll\n\nDuplicada?\n\n- A\n- B\n- C\n- D",
+    )
+    assert not chamadas_ia, "não deveria recriar/duplicar enquete reconhecendo Daily Poll / Enquete do Dia"
+    assert final.count("## Daily Poll") == 1
+    assert "Daily Poll / Enquete do Dia" not in final
+    assert "\nHow do you prefer to book your vacations?\n\n- Through a professional human travel agent" in final
+    c_enq = _checagem(rel, "Daily Poll")
+    assert c_enq.status == CORRIGIDO
+    assert "3 opções" in c_enq.corrigido
+    assert not rel.tem_aviso
+
+    md_duplicado = (
+        md_unico
+        + "\n## Daily Poll\n\n"
+        + "Should a high school diploma actually be required to lead a country?\n\n"
+        + "- Yes, basic civics feels fair.\n"
+        + "- No, grads still wreck everything.\n"
+        + "- Only if verified against MS Paint.\n"
+        + "- Make candidates survive a common sense quiz.\n"
+    )
+    final_dup, rel_dup = aplicar_dupla_verificacao(
+        md_duplicado, idioma="en", extrair_data=extrair_data_de_texto
+    )
+    assert final_dup.count("## Daily Poll") == 1
+    assert "How do you prefer" not in final_dup
+    assert "Should a high school diploma actually be required to lead a country?" in final_dup
+    assert _checagem(rel_dup, "Daily Poll").status == CORRIGIDO
+
+
+def test_remove_autopromocao_sorteio_merchan_sem_falso_positivo_integridade():
+    entrada = (
+        "# 15 de novembro de 2026\n\n"
+        "Hoje também é o último dia para concorrer a um **iPhone 18 Pro** indicando o *the news* e registrando seu Streak.\n\n"
+        "## Estudo FGV EAESP (ARQ)\n\n"
+        "Um estudo da FGV EAESP testou 80 janelas de dez anos desde 2010 e mostrou vantagem de 9,2%.\n"
+        "- **Taxas e ativos no ARQ:** conversão de 0,5% (R$ 600 em dez anos) e corretagem de 0,2% em 10 mil ativos.\n"
+        "- **Investback de lançamento:** apenas nas próximas 48 horas, o ARQ devolve US$ 10 dos primeiros US$ 100.\n\n"
+        "## Apple anuncia novidades\n\n"
+        "A Apple anunciou o iPhone 18 Pro por US$ 1.199 com chip A20 de 2 nanômetros.\n"
+        "- Destaque editorial: **As 25 melhores cidades do mundo em 2026**\n\n"
+        "Next week, a meditation on whether Canada has its own Strait of Hormuz.\n\n"
+        "## Peak Premium & Advertising\n\n"
+        "- **Try Peak Premium:** Unlimited access for $1.75 per week for 60 days.\n"
+        "- **Advertise with The Peak:** Reach over 200,000 professionals.\n"
+        "- **Head Office:** 68 Claremont Street, Toronto, Ontario M6J 2M5, Canada.\n\n"
+        "## Última chamada: iPhone 18 Pro\n\n"
+        "Último dia da campanha para concorrer a um iPhone 18 Pro indicando amigos para receber o the news.\n\n"
+        "## Enquete do Dia\n\nQual notícia marcou?\n\n- Estudo FGV\n- Apple\n- Mercado\n- Nenhuma\n"
+    )
+    final, rel = aplicar_dupla_verificacao(
+        entrada, entrada=entrada, idioma="pt", extrair_data=extrair_data_de_texto
+    )
+    assert "## Estudo FGV EAESP\n" in final
+    assert "(ARQ)" not in final
+    assert "iPhone 18 Pro indicando" not in final
+    assert "Streak" not in final
+    assert "Investback" not in final
+    assert "Taxas e ativos no ARQ" not in final
+    assert "Destaque editorial" not in final
+    assert "Next week" not in final
+    assert "Peak Premium" not in final
+    assert "Claremont Street" not in final
+    assert "Última chamada" not in final
+    # Notícia legítima com número da Apple permanece intacta
+    assert "A Apple anunciou o iPhone 18 Pro por US$ 1.199" in final
+    assert _status(rel, "Ruído") == CORRIGIDO
+    assert _status(rel, "Integridade") == OK
+    assert not rel.tem_aviso
+
