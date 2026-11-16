@@ -86,6 +86,7 @@ _RE_TITULO_PATROCINADOR = re.compile(
     r"[—\-–]\s*(?:Oferecimento|Patroc[ií]nio|Publieditorial)\b.*)$",
     re.I,
 )
+_RE_TITULO_PEAK_PICKS = re.compile(r"^(#{2,3}\s+)Peak\s+Picks\s*$", re.I)
 _RE_RUIDO = re.compile(
     r"(?:\b(?:assine\s+(?:j[aá]|agora|a\s+pro)|assinatura\s+premium|"
     r"conte[uú]do\s+patrocinado|publieditorial|sponsored\s+content|"
@@ -97,6 +98,7 @@ _RE_RUIDO = re.compile(
     r"concorrer\s+a\s+(?:um|uma)\s+\*{0,2}iPhone\b|"
     r"(?:para\s+)?receber\s+o\s+\*{0,2}the\s+news\*{0,2}\b|"
     r"(?:registrando|batendo|bater)\s+(?:o\s+|seu\s+)\*{0,2}Streak\*{0,2}\b)\b|"
+    r"^#{2,3}\s+Peak\s+Picks\b|"
     r"^\s*(?:[-*•]\s*)?\*{0,2}(?:oferecimento|apresentado\s+por|sponsored\s+by|together\s+with|"
     r"presented\s+by|na\s+edi[cç][aã]o\s+de\s+hoje|in\s+today'?s\s+(?:edition|issue))\*{0,2}\s*:)",
     re.I | re.M,
@@ -414,6 +416,10 @@ def _adaptar_ouvintes(linhas, idioma):
         pares = [
             (r"\b(?:Subscribe\s+to|Sign\s+up\s+for)\s+our\s+newsletters?\b", "Follow our shows"),
             (r"\b(?:subscribe\s+to|sign\s+up\s+for)\s+our\s+newsletters?\b", "follow our shows"),
+            (r"\bSubscribers\b", "Listeners"),
+            (r"\bsubscribers\b", "listeners"),
+            (r"\bSubscriber\b", "Listener"),
+            (r"\bsubscriber\b", "listener"),
             (r"\bReaders\b", "Listeners"),
             (r"\breaders\b", "listeners"),
             (r"\bReader\b", "Listener"),
@@ -427,6 +433,10 @@ def _adaptar_ouvintes(linhas, idioma):
             (r"\bassinem\s+(?:as\s+nossas\s+|nossas\s+)newsletters\b", "acompanhem os nossos programas"),
             (r"\bAssine\s+(?:a\s+nossa\s+|nossa\s+)newsletter\b", "Acompanhe o nosso programa"),
             (r"\bassine\s+(?:a\s+nossa\s+|nossa\s+)newsletter\b", "acompanhe o nosso programa"),
+            (r"\bAssinantes\b", "Ouvintes"),
+            (r"\bassinantes\b", "ouvintes"),
+            (r"\bAssinante\b", "Ouvinte"),
+            (r"\bassinante\b", "ouvinte"),
             (r"\bLeitores\b", "Ouvintes"),
             (r"\bleitores\b", "ouvintes"),
             (r"\bLeitor(a)?\b", "Ouvinte"),
@@ -849,6 +859,11 @@ def _remover_ruido_detalhado(md):
 
     novas = []
     for linha in linhas_filtradas:
+        m_pp = _RE_TITULO_PEAK_PICKS.match(linha)
+        if m_pp:
+            removidos += 1
+            amostras.append("título 'Peak Picks' → 'Quick Picks'")
+            linha = f"{m_pp.group(1)}Quick Picks"
         m_pat = _RE_TITULO_PATROCINADOR.match(linha)
         if m_pat:
             removidos += 1

@@ -472,6 +472,10 @@ def test_remove_autopromocao_sorteio_merchan_sem_falso_positivo_integridade():
         "- **Head Office:** 68 Claremont Street, Toronto, Ontario M6J 2M5, Canada.\n\n"
         "## Última chamada: iPhone 18 Pro\n\n"
         "Último dia da campanha para concorrer a um iPhone 18 Pro indicando amigos para receber o the news.\n\n"
+        "## Peak Picks\n\n"
+        "- Mexico just made $5.4 million selling Ryan Wedding's motorcycle collection.\n\n"
+        "## Voz dos Ouvintes\n\n"
+        "- (Imparcial) Sou assinante desde o início do programa.\n\n"
         "## Enquete do Dia\n\nQual notícia marcou?\n\n- Estudo FGV\n- Apple\n- Mercado\n- Nenhuma\n"
     )
     final, rel = aplicar_dupla_verificacao(
@@ -488,6 +492,9 @@ def test_remove_autopromocao_sorteio_merchan_sem_falso_positivo_integridade():
     assert "Peak Premium" not in final
     assert "Claremont Street" not in final
     assert "Última chamada" not in final
+    assert "## Peak Picks" not in final
+    assert "## Quick Picks\n" in final
+    assert "Sou ouvinte desde o início do programa." in final
     # Notícia legítima com número da Apple permanece intacta
     assert "A Apple anunciou o iPhone 18 Pro por US$ 1.199" in final
     assert _status(rel, "Ruído") == CORRIGIDO
