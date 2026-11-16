@@ -8,6 +8,7 @@ import threading
 import time
 import urllib.parse
 from dataclasses import dataclass, field
+from difflib import SequenceMatcher
 from pathlib import Path
 
 import requests
@@ -669,8 +670,95 @@ _RE_TITULO_PONTUADO = re.compile(r"^(#{1,6}\s+.*?)[.?!:]\s*$")
 _RE_CERCA_EXTERNA = re.compile(r"^\s*```(?:markdown|md)?\s*\n(.*?)\n\s*```\s*$", re.S | re.I)
 
 
+def _norm_paragrafo(texto):
+    limpo = re.sub(r"[*_`\"'“”‘’]", "", texto or "")
+    return " ".join(limpo.lower().split())
+
+
+def _tokens_paragrafo(norm_txt):
+    return {w for w in re.findall(r"[a-záéíóúâêôãõç0-9]{4,}", norm_txt)}
+
+
+def _paragrafo_ja_visto(nb, tb, vistos):
+    for v_norm, v_tok in vistos:
+        if nb == v_norm:
+            return True
+        if len(nb) >= 90 and len(v_norm) >= 90:
+            if SequenceMatcher(None, nb, v_norm).ratio() >= 0.72:
+                return True
+            if len(tb) >= 10 and len(v_tok) >= 10:
+                if len(tb & v_tok) / min(len(tb), len(v_tok)) >= 0.75:
+                    return True
+    return False
+
+
+def _remover_paragrafos_redundantes(texto):
+    """Remove parágrafos de ficha técnica/sinopse repetidos entre seções `##` distintas e descarta
+    seções `##` subsequentes cujo corpo (>65% dos parágrafos, min 3) já foi coberto em seção anterior.
+    """
+    secoes = [{"titulo": None, "linhas": []}]
+    for linha in texto.split("\n"):
+        if linha.startswith("## "):
+            secoes.append({"titulo": linha[3:].strip(), "linhas": [linha]})
+        else:
+            secoes[-1]["linhas"].append(linha)
+
+    vistos = []
+    mantidas = []
+    for s in secoes:
+        tit = (s["titulo"] or "").lower()
+        if (
+            not s["titulo"]
+            or tit.startswith("resultados")
+            or "enquete" in tit
+            or "daily poll" in tit
+            or "voz dos" in tit
+            or "listener" in tit
+        ):
+            mantidas.append("\n".join(s["linhas"]).strip())
+            continue
+
+        miolo, rabo = _separar_rabo(s["linhas"][1:])
+        corpo_txt = "\n".join(miolo).strip()
+        blocos = [b.strip() for b in re.split(r"\n{2,}", corpo_txt) if b.strip()]
+        novos_blocos = []
+        prosa_total = 0
+        prosa_dup = 0
+        for b in blocos:
+            eh_prosa = not b.startswith("#") and not re.match(r"^\s*(?:[-*•]|\d+[.)])\s+", b) and b != "---"
+            nb = _norm_paragrafo(b)
+            tb = _tokens_paragrafo(nb)
+            if eh_prosa and len(nb) >= 55:
+                prosa_total += 1
+                if _paragrafo_ja_visto(nb, tb, vistos):
+                    prosa_dup += 1
+                    continue
+            novos_blocos.append(b)
+
+        if prosa_total >= 3 and prosa_dup / prosa_total >= 0.65:
+            if rabo:
+                mantidas.append("\n".join(rabo).strip())
+            continue
+        if not novos_blocos and blocos:
+            novos_blocos = [blocos[0]]
+
+        for b in novos_blocos:
+            nb = _norm_paragrafo(b)
+            if len(nb) >= 55:
+                vistos.append((nb, _tokens_paragrafo(nb)))
+
+        partes_sec = [s["linhas"][0]]
+        if novos_blocos:
+            partes_sec.append("\n\n".join(novos_blocos))
+        if rabo:
+            partes_sec.append("\n".join(rabo).strip())
+        mantidas.append("\n\n".join(p for p in partes_sec if p))
+
+    return re.sub(r"\n{3,}", "\n\n", "\n\n".join(p for p in mantidas if p)).strip()
+
+
 def deduplicar_secoes(texto):
-    """Remove seções com título repetido sem perder conteúdo.
+    """Remove seções com título repetido e parágrafos/seções redundantes sem perder conteúdo.
 
     - Títulos de nível 2 (##) são deduplicados no escopo global do documento.
     - Subtítulos de nível 3+ (###) são deduplicados apenas dentro do mesmo ## pai,
@@ -678,6 +766,7 @@ def deduplicar_secoes(texto):
     - Mesmo título e mesmo corpo: a seção repetida é descartada.
     - Mesmo título e corpo diferente: o corpo é anexado à primeira ocorrência
       (antes, só o título era apagado e o corpo ficava "colado" na seção anterior).
+    - Parágrafos de sinopse/ficha técnica repetidos entre seções `##` distintas são removidos.
     """
     blocos = [{"nivel": 0, "titulo": None, "escopo_h2": None, "linhas": []}]
     escopo_h2 = None
@@ -716,7 +805,8 @@ def deduplicar_secoes(texto):
             saida.append({"nivel": 0, "titulo": None, "escopo_h2": None, "linhas": rabo})
 
     linhas = [linha for b in saida for linha in b["linhas"]]
-    return re.sub(r"\n{3,}", "\n\n", "\n".join(linhas)).strip()
+    unificado = re.sub(r"\n{3,}", "\n\n", "\n".join(linhas)).strip()
+    return _remover_paragrafos_redundantes(unificado)
 
 
 def inserir_apos_h1(corpo, bloco_extra):

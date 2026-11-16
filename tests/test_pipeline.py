@@ -414,6 +414,42 @@ def test_buscar_edicoes_beehiiv_recupera_manha_e_night_faltante(tmp_path):
     assert [r["assunto"] for r in recuperados2] == ["the news: 14/11/2026"]
 
 
+def test_dedup_remove_paragrafos_repetidos_e_secao_redundante_entre_h2():
+    rodape_gta = (
+        "A etapa de pré-venda teria superado 15 milhões de unidades comercializadas antecipadamente, "
+        "culminando em uma receita de US$ 1,45 bilhão, de acordo com dados compartilhados pelo Sensor Tower."
+    )
+    texto = "\n\n".join([
+        "# 16 de novembro de 2026",
+        "## GTA VI muda monetização na Twitch\n\nA Twitch prepara mudanças nas regras para jogos adultos.\n\n" + rodape_gta,
+        "## GTA VI pode vender 55 milhões até março\n\nAnalistas projetam 55 milhões de cópias vendidas no ano fiscal.\n\n" + rodape_gta,
+        "## 007: Robert Pattinson aparece em teaser\n\n"
+        "A Amazon MGM divulgou um teaser oficial revelando Robert Pattinson como James Bond.\n\n"
+        "Para garantir o papel de James Bond, Pattinson superou uma disputada etapa final de testes que também reuniu "
+        "Nicholas Hoult, Jack Lowden, Callum Turner e Josh O'Connor.\n\n"
+        "Aos 40 anos, Pattinson mantém a média etária adotada pelos antecessores no papel, já que Daniel Craig tinha 38 anos "
+        "quando foi anunciado e Pierce Brosnan assumiu o posto aos 42.\n\n"
+        "Na obra literária de Fleming, Bond é retratado como um homem britânico alto, magro, de cabelos escuros e olhos azuis "
+        "que combina charme com uma personalidade fria e letal.",
+        "## O nome é Bond: Robert Pattinson é anunciado como novo 007\n\n"
+        "Robert Pattinson acaba de ser oficializado pela Amazon MGM como James Bond.\n\n"
+        "Para conquistar o posto, Pattinson superou uma etapa final de testes que também reuniu "
+        "Nicholas Hoult, Jack Lowden, Callum Turner e Josh O'Connor.\n\n"
+        "Aos 40 anos, Pattinson mantém a média etária adotada anteriormente, considerando que Daniel Craig tinha 38 anos "
+        "quando foi anunciado e Pierce Brosnan assumiu aos 42.\n\n"
+        "Na obra literária de Fleming, Bond é retratado como um homem britânico alto, magro, de cabelos escuros e olhos azuis "
+        "que combina charme com uma personalidade fria e letal.",
+    ])
+    out = deduplicar_secoes(texto)
+    # Rodapé repetido removido da segunda matéria de GTA, mantendo o dado inédito de 55 milhões
+    assert out.count("15 milhões de unidades") == 1
+    assert "Analistas projetam 55 milhões de cópias" in out
+    # Seção quase duplicada de 007 descartada, mantendo a primeira
+    assert "## 007: Robert Pattinson aparece em teaser" in out
+    assert "## O nome é Bond: Robert Pattinson é anunciado como novo 007" not in out
+
+
+
 
 
 
