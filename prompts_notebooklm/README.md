@@ -20,3 +20,10 @@ Graças a isso, **você não precisa editar o nome do programa nem o número da 
 | [`podcast_pt_br_universal.md`](./podcast_pt_br_universal.md) | **Todos os programas em Português:**<br>• *Boletim Fora de Ordem*<br>• *Fechamento de Caixa*<br>• *Diagnóstico Sincero*<br>• *Gol Contra*<br>• *Ata de Reunião*<br>• *Alucinação Sintética*<br>• *Hackeando o Problema*<br>• *Pipoca Vencida*<br>• *Controle Quebrado* |
 | [`podcast_en_the_out_of_order_dispatch.md`](./podcast_en_the_out_of_order_dispatch.md) | **Programa em Inglês:**<br>• *The Out of Order Dispatch* |
 
+## Duração recomendada no NotebookLM
+
+| Tamanho da pauta | Configuração no NotebookLM | Resultado esperado |
+| :--- | :--- | :--- |
+| **Curta (3–5 matérias)** — ex.: *Controle Quebrado* | **Mais curto (Shorter)** (~10 min) | Ritmo direto sem enchimento de linguiça nem loops ideológicos |
+| **Média/Longa (7–14 matérias)** — ex.: *Boletim Fora de Ordem*, *Pipoca Vencida* | **Padrão (Default)** (~14–15 min) | Cobre todas as seções na ordem sem correr e fecha o bloco final sem corte abrupto |
+
