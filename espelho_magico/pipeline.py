@@ -871,8 +871,8 @@ def sanitizar_markdown_final(texto):
     for linha in linhas:
         l_strip = linha.strip()
 
-        # Remove imagens ou linhas que sejam apenas créditos de fotógrafo/agência residuais
-        if _RE_CREDITO_RESIDUAL.match(l_strip) or _RE_LINHA_CREDITO_SOLTO.match(l_strip):
+        # Remove imagens ou linhas que sejam apenas créditos de fotógrafo/agência ou aspas decorativas soltas
+        if _RE_CREDITO_RESIDUAL.match(l_strip) or _RE_LINHA_CREDITO_SOLTO.match(l_strip) or re.match(r"^\*{0,2}[“\"”]\*{0,2}$", l_strip):
             continue
 
         # Cabeçalho H1 (#)
@@ -1154,7 +1154,7 @@ class Pipeline:
             return ResultadoGrupo(nome, "ignorado", f"⏭️ {cfg.nome_final} ignorado (e-mail promocional/administrativo sem notícias)",
                                   "Ignorado: e-mail sem notícias", time.time() - inicio)
 
-        if resultados_futebol:
+        if resultados_futebol and "## RESULTADOS RECENTES" in resultados_futebol:
             final = sanitizar_markdown_final(inserir_apos_h1(corpo_editorial, resultados_futebol))
         else:
             final = corpo_editorial

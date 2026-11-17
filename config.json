@@ -71,29 +71,66 @@
   ],
 
   "futebol": {
-    "ligas_permitidas": [
-      "brasileiro serie a", "copa do brasil", "copa libertadores", "copa sudamericana",
-      "english premier league", "spanish laliga", "laliga", "german bundesliga",
-      "italian serie a", "french ligue 1", "ligue 1", "uefa champions league", "uefa europa league",
-      "copa america", "uefa european championship", "fifa world cup", "fifa club world cup",
-      "conmebol copa america", "world cup qualifying", "eliminatórias"
+    "dias_janela_segunda": 3,
+    "garantir_janela_segunda": true,
+    "dias_max_pendentes": 5,
+    "ligas_todos_jogos": [
+      "brasileiro serie a",
+      "fifa world cup",
+      "uefa european championship",
+      "copa america",
+      "conmebol copa america",
+      "fifa club world cup"
+    ],
+    "ligas_populares": [
+      "copa do brasil", "copa libertadores", "copa sudamericana",
+      "english premier league", "fa cup", "efl cup",
+      "spanish laliga", "laliga", "copa del rey",
+      "german bundesliga", "dfb pokal",
+      "italian serie a", "coppa italia",
+      "french ligue 1", "ligue 1",
+      "portuguese primeira liga", "saudi pro league", "major league soccer",
+      "uefa champions league", "uefa europa league"
+    ],
+    "ligas_selecoes": [
+      "uefa nations league", "world cup qualifying", "eliminatorias", "eliminatórias",
+      "mens international friendly"
+    ],
+    "selecoes_destaque": [
+      "brazil", "brasil", "argentina", "france", "frança", "spain", "espanha",
+      "germany", "alemanha", "england", "inglaterra", "portugal", "italy", "itália",
+      "netherlands", "holanda", "uruguay", "uruguai", "colombia", "colômbia",
+      "belgium", "bélgica"
     ],
     "termos_ligas_ignoradas": [
-      "womens", "ncaa", "2 bundesliga", "ligue 2", "championship", "laliga 2", "segunda"
+      "women", "womens", "women's", "vrouwen", "feminina", "feminino", "femenil",
+      "feminin", "féminin", "femení", "frauen", "dames", "femminile", "liga f",
+      "première ligue", "arkema", "nwsl", "wsl", "shebelieves",
+      "ncaa", "youth", "juniores", "copinha", "olympic", "reserve",
+      "2 bundesliga", "ligue 2", "championship", "laliga 2", "segunda", "serie b"
     ],
     "ligas_excluidas": [
       "russian", "chinese", "scottish", "bolivian", "chile", "allsvenskan", "eliteserien",
-      "turkish", "colombian", "mexican", "peruvian", "paraguayan", "uruguayan", "venezuelan",
-      "ecuadorian", "austrian", "greek", "danish", "swiss", "clausura", "apertura", "liga mx", "salvadoran"
+      "turkish", "colombian", "mexican", "peruvian", "paraguayan", "uruguayan", "uruguaya",
+      "venezuelan", "ecuadorian", "austrian", "greek", "danish", "swiss",
+      "clausura", "apertura", "liga mx", "salvadoran", "guatemalan", "club friendly",
+      "indian football", "nacional b", "usl"
     ],
     "clubes_destaque": [
-      "flamengo", "palmeiras", "corinthians", "são paulo", "sao paulo", "santos", "grêmio",
-      "gremio", "internacional", "atlético-mg", "atletico-mg", "cruzeiro", "botafogo",
-      "fluminense", "vasco", "bahia", "fortaleza", "athletico-pr", "coritiba",
-      "real madrid", "barcelona", "manchester city", "manchester united", "liverpool",
-      "arsenal", "chelsea", "bayern munich", "bayern", "borussia dortmund", "dortmund",
-      "paris saint-germain", "psg", "juventus", "inter milan", "milan", "ac milan",
-      "benfica", "porto", "sporting cp", "al nassr", "al hilal", "inter miami"
+      "flamengo", "palmeiras", "corinthians", "são paulo", "sao paulo", "santos",
+      "grêmio", "gremio", "internacional", "atlético-mg", "atletico-mg", "atletico mineiro",
+      "cruzeiro", "botafogo", "fluminense", "vasco", "vasco da gama", "bahia",
+      "fortaleza", "athletico-pr", "athletico paranaense", "coritiba",
+      "boca juniors", "river plate",
+      "real madrid", "barcelona", "atlético madrid", "atletico madrid",
+      "manchester city", "man city", "manchester united", "man utd",
+      "liverpool", "arsenal", "chelsea", "tottenham", "tottenham hotspur",
+      "newcastle", "newcastle united", "aston villa",
+      "bayern munich", "bayern", "borussia dortmund", "dortmund", "bayer leverkusen", "leverkusen",
+      "paris saint-germain", "psg", "juventus", "inter milan", "internazionale",
+      "milan", "ac milan", "napoli", "as roma", "roma",
+      "benfica", "porto", "sporting cp", "ajax", "psv",
+      "al nassr", "al hilal", "al ittihad", "inter miami"
     ]
   }
 }

@@ -107,7 +107,10 @@ _RE_RUIDO = re.compile(
     r"Destaque\s+editorial|"
     r"concorrer\s+a\s+(?:um|uma)\s+\*{0,2}iPhone\b|"
     r"(?:para\s+)?receber\s+o\s+\*{0,2}the\s+news\*{0,2}\b|"
-    r"(?:registrando|batendo|bater)\s+(?:o\s+|seu\s+)\*{0,2}Streak\*{0,2}\b)\b|"
+    r"(?:registrando|batendo|bater)\s+(?:o\s+|seu\s+)\*{0,2}Streak\*{0,2}\b|"
+    r"My\s+Minerva\s+Foods)\b|"
+    r"👉\s*(?:Veja|Confira|Acesse|Clique)\s+aqui\b|"
+    r"O\s+que\s+voc[eê]\s+achou\s+d[ae]\s+edi[cç][aã]o\s+de\s+hoje\??|"
     r"^#{2,3}\s+(?:Peak\s+Picks|D[eê]nius\s+Games)\b|"
     r"^\s*(?:[-*•]\s*)?\*{0,2}(?:oferecimento|apresentado\s+por|sponsored\s+by|together\s+with|"
     r"presented\s+by|na\s+edi[cç][aã]o\s+de\s+hoje|in\s+today'?s\s+(?:edition|issue))\*{0,2}\s*:)",
@@ -124,18 +127,22 @@ _RE_RUIDO_LINHA = re.compile(
     r"publieditorial|sponsored\s+content|go\s+premium|upgrade\s+to\s+(?:pro|premium)|"
     r"continue\s+lendo|keep\s+reading|indique\s+(?:um\s+amigo|e\s+ganhe)|"
     r"refer\s+a\s+friend|use\s+o\s+cupom)\b|"
-    r"Next\s+week,\s+a\s+(?:meditation|look|deep\s+dive|tour|preview)\s+on\b)|"
+    r"Next\s+week,\s+a\s+(?:meditation|look|deep\s+dive|tour|preview)\s+on\b|"
+    r"O\s+que\s+voc[eê]\s+achou\s+d[ae]\s+edi[cç][aã]o\s+de\s+hoje\??\s*\*{0,2}$|"
+    r"(?:🥇|🥈|🥉)\s*(?:Gostei|Bem\s+mais\s+ou\s+menos|Mais\s+ou\s+menos|N[aã]o\s+gostei)\b[^.\n]*$)|"
     r".*?(?:concorrer\s+a\s+(?:um|uma)\s+\*{0,2}iPhone\b|"
     r"indicando\b.*?\b(?:para\s+receber\s+o\s+\*{0,2}the\s+news\*{0,2}|\*{0,2}Streak\*{0,2})|"
     r"(?:registrando|batendo|bater)\s+(?:o\s+|seu\s+)\*{0,2}Streak\*{0,2}\b|"
+    r"\bhub\s+gratuito\b.*?(?:te\s+mostra|confira|veja\s+aqui)|"
     r"apenas\s+nas\s+pr[oó]ximas\s+\*{0,2}\d+\s*horas\*{0,2},?\s+o\s+\*{0,2}ARQ\*{0,2}\s+devolve\b))",
     re.I,
 )
 _RE_RUIDO_INLINE = re.compile(
-    r"\s*(?:[—\-–|]\s*|\(\s*)?(?:\b(?:continue\s+lendo|keep\s+reading|assine\s+(?:j[aá]|agora|a\s+pro)|"
+    r"(?:\s*(?:[—\-–|]\s*|\(\s*)?(?:\b(?:continue\s+lendo|keep\s+reading|assine\s+(?:j[aá]|agora|a\s+pro)|"
     r"upgrade\s+to\s+(?:pro|premium)|go\s+premium|conte[uú]do\s+patrocinado|sponsored\s+content)\b|"
-    r"Next\s+week,\s+a\s+(?:meditation|look|deep\s+dive|tour|preview)\s+on\b)"
-    r"[^.!?\n]*[.!?\)]?",
+    r"Next\s+week,\s+a\s+(?:meditation|look|deep\s+dive|tour|preview)\s+on\b|"
+    r"👉\s*(?:Veja|Confira|Acesse|Clique)\s+aqui\b)[^.!?\n]*[.!?\)]?|"
+    r"\bNesta\s+mat[eé]ria,\s+a\s+\*{0,2}My\s+Minerva\s+Foods\*{0,2}\s+explicou\s+que\s+)",
     re.I,
 )
 _MESES_PT = (

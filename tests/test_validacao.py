@@ -557,3 +557,28 @@ def test_enquete_contexto_abaixo_limite_divisao_e_bloco_nao_mistura_perguntas():
     assert bloco.count("\n- ") == 4
 
 
+def test_remove_minerva_cta_e_caixa_avaliacao_edicao():
+    md = (
+        "# 17 de novembro de 2026\n\n"
+        "## Nutrição na corrida\n\n"
+        "> 🏃‍➡️ **Na prática:** o que fica no prato importa mais. Nesta matéria, a **My Minerva Foods** explicou que são as **proteínas** que reparam o músculo.\n\n"
+        "- Quer montar um prato? A **My Minerva Foods**, hub gratuito de ciência e nutrição, te mostra como. 👉 Veja aqui o conteúdo completo.\n\n"
+        "## Voz dos Ouvintes\n\n"
+        "- (32%): Excelente resumo!\n\n"
+        "O que você achou da edição de hoje?\n\n"
+        "- 🥇 Gostei  \n"
+        "- 🥈 Bem mais ou menos  \n"
+        "- 🥉 Não gostei\n\n"
+        "## Enquete do Dia\n\nQual?\n\n- A\n- B\n- C\n- D\n"
+    )
+    final, rel = aplicar_dupla_verificacao(md, idioma="pt", extrair_data=extrair_data_de_texto)
+    assert "My Minerva Foods" not in final
+    assert "Veja aqui" not in final
+    assert "O que você achou da edição de hoje" not in final
+    assert "Gostei" not in final
+    assert "proteínas" in final
+    assert "Excelente resumo!" in final
+    assert _status(rel, "Ruído") == CORRIGIDO
+    assert not rel.tem_aviso
+
+

@@ -104,6 +104,7 @@ def test_sanitizar_markdown_final():
         "Source: FanDuel.",
         "Texto da matéria. (Aprofunde)",
         "Comentário: caso queira aprofundar, fica a critério.",
+        "**“**",
         "",
         "[Descrição da Imagem: Fortune | Getty Images]",
         "[Descrição da Imagem: Gráfico detalhado de vendas de veículos elétricos]",
@@ -126,6 +127,7 @@ def test_sanitizar_markdown_final():
     # (Aprofunde), Source: FanDuel e links de twitter removidos
     assert "(Aprofunde)" not in out
     assert "caso queira aprofundar, fica a critério." in out
+    assert "**“**" not in out
     assert "Source: FanDuel" not in out
     assert "pic.twitter.com" not in out
     assert "https://t.co" not in out
@@ -449,6 +451,45 @@ def test_dedup_remove_paragrafos_repetidos_e_secao_redundante_entre_h2():
     # Seção quase duplicada de 007 descartada, mantendo a primeira
     assert "## 007: Robert Pattinson aparece em teaser" in out
     assert "## O nome é Bond: Robert Pattinson é anunciado como novo 007" not in out
+
+
+def test_pipeline_ignora_aviso_futebol_sem_jogos(tmp_path, monkeypatch):
+    from espelho_magico import futebol
+
+    monkeypatch.setattr(futebol, "coletar_resultados", lambda: ("Nenhum jogo relevante encontrado para 16/11/2026.", None))
+
+    class ExtratorFalso:
+        chamadas = 0
+
+        def extrair(self, _c, _p):
+            self.chamadas += 1
+            if self.chamadas == 1:
+                return (
+                    "# 17 de novembro de 2026\n\n"
+                    "## Matéria esportiva principal\n\n"
+                    + ("Texto completo da pauta esportiva do dia com todos os detalhes. " * 6)
+                )
+            return "## Enquete do Dia\n\nQuem vence?\n\n- A\n- B\n- C\n- D"
+
+    pipe = Pipeline(Opcoes(dry_run=True, max_workers=1), extrator=ExtratorFalso(), drive_service=None, gmail_service=None)
+    pipe.pasta_saida = tmp_path
+    cfg = ConfigGrupo(
+        chave="tns sports",
+        emails=[{
+            "id": None,
+            "assunto": "tns sports: teste",
+            "remetente": "tns sports",
+            "data": "Tue, 17 Nov 2026 09:00:00 +0000",
+            "conteudo_html": "<p>Texto completo da pauta esportiva do dia com todos os detalhes.</p>",
+            "eh_html": True,
+        }],
+        titulo_base="Gol Contra",
+        nome_final="Gol Contra #203.md",
+    )
+    pipe.executar([cfg])
+    gerado = (tmp_path / "Gol Contra #203.md").read_text(encoding="utf-8")
+    assert "Nenhum jogo" not in gerado
+    assert "## Matéria esportiva principal" in gerado
 
 
 
