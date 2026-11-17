@@ -4,11 +4,14 @@ import io
 from rich.console import Console
 from rich.text import Text
 
+from espelho_magico.llm import MIN_CHARS_PARA_DIVIDIR
 from espelho_magico.pipeline import ConfigGrupo, Opcoes, Pipeline, extrair_data_de_texto
 from espelho_magico.validacao import (
     AVISO,
     CORRIGIDO,
     OK,
+    _contexto_para_enquete,
+    _montar_bloco_enquete,
     aplicar_dupla_verificacao,
     contar_noticias,
     converter_tabelas_em_topicos,
@@ -500,4 +503,57 @@ def test_remove_autopromocao_sorteio_merchan_sem_falso_positivo_integridade():
     assert _status(rel, "Ruído") == CORRIGIDO
     assert _status(rel, "Integridade") == OK
     assert not rel.tem_aviso
+
+
+def test_remove_denius_games_e_extra_clickbait_puro():
+    md = (
+        "# 17 de novembro de 2026\n\n"
+        "## Economia em foco\n\n"
+        "O dólar caiu para R$ 5,28 e a bolsa subiu.\n\n"
+        "## Extra\n\n"
+        "- **PARA VER:** Os carros mais bizarros.\n"
+        "- **DESCUBRA:** Como era a casa.\n"
+        "- **PARA CLICAR:** A reação curiosa.\n"
+        "- **NESTE DIA:** A carta histórica.\n\n"
+        "## Dênius Games – O jogo das corujas noturnas chegou\n\n"
+        "## Enquete do Dia\n\nQual destaque?\n\n- Economia\n- Tecnologia\n- Saúde\n- Nenhum\n"
+    )
+    final, rel = aplicar_dupla_verificacao(md, idioma="pt", extrair_data=extrair_data_de_texto)
+    assert "## Extra" not in final
+    assert "PARA VER:" not in final
+    assert "DESCUBRA:" not in final
+    assert "Dênius Games" not in final
+    assert "## Economia em foco" in final
+    assert _status(rel, "Ruído") == CORRIGIDO
+    assert not rel.tem_aviso
+
+
+def test_enquete_contexto_abaixo_limite_divisao_e_bloco_nao_mistura_perguntas():
+    secoes = "\n\n".join(
+        f"## Notícia {i}\n\n" + ("Texto detalhado da pauta com acontecimentos relevantes. " * 25)
+        for i in range(1, 20)
+    )
+    md_grande = f"# 17 de novembro de 2026\n\n{secoes}\n"
+    ctx = _contexto_para_enquete(md_grande)
+    assert len(ctx) < MIN_CHARS_PARA_DIVIDIR
+
+    resposta_mista = (
+        "## Enquete do Dia\n\n"
+        "Você andaria no carro autônomo?\n\n"
+        "- Só se tiver volante de reserva\n"
+        "- Vou no banco de trás\n"
+        "- Prefiro dirigir\n"
+        "- Só depois que outros testarem\n\n"
+        "## Enquete do Dia\n\n"
+        "Você usaria pente elétrico contra calvície?\n\n"
+        "- Qualquer coisa é melhor do que aceitar a calvície\n"
+        "- Prefiro boné\n"
+    )
+    bloco = _montar_bloco_enquete(resposta_mista, "pt")
+    assert bloco is not None
+    assert "Você andaria no carro autônomo?" in bloco
+    assert "Você usaria pente elétrico" not in bloco
+    assert "calvície" not in bloco
+    assert bloco.count("\n- ") == 4
+
 

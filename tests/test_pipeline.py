@@ -103,6 +103,7 @@ def test_sanitizar_markdown_final():
         "## A IA vai acabar com empregos?",
         "Source: FanDuel.",
         "Texto da matéria. (Aprofunde)",
+        "Comentário: caso queira aprofundar, fica a critério.",
         "",
         "[Descrição da Imagem: Fortune | Getty Images]",
         "[Descrição da Imagem: Gráfico detalhado de vendas de veículos elétricos]",
@@ -124,6 +125,7 @@ def test_sanitizar_markdown_final():
     assert "## Outra Notícia Importante\n" in out
     # (Aprofunde), Source: FanDuel e links de twitter removidos
     assert "(Aprofunde)" not in out
+    assert "caso queira aprofundar, fica a critério." in out
     assert "Source: FanDuel" not in out
     assert "pic.twitter.com" not in out
     assert "https://t.co" not in out

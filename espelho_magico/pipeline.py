@@ -664,7 +664,10 @@ _RE_LINHA_CREDITO_SOLTO = re.compile(
     r"^(?:source|photo|image|credit|illustration|artwork(?:\s+by)?|foto|cr[eé]dito|imagem)\s*:\s*[^\n]{1,80}$",
     re.I,
 )
-_RE_APROFUNDE = re.compile(r"\s*\(?(?:aprofund[ea]|leia mais|saiba mais)\)?", re.I)
+_RE_APROFUNDE = re.compile(
+    r"\s*(?:\((?:aprofund[ea]|leia mais|saiba mais)\)|\b(?:aprofund[ea]|leia mais|saiba mais)\b(?=\s*(?:[.!?]\s*)?(?:\n|$)))",
+    re.I,
+)
 _RE_TWITTER_LIXO = re.compile(r"(?:https?://t\.co/\S+|pic\.twitter\.com/\S+)")
 _RE_TITULO_PONTUADO = re.compile(r"^(#{1,6}\s+.*?)[.?!:]\s*$")
 _RE_CERCA_EXTERNA = re.compile(r"^\s*```(?:markdown|md)?\s*\n(.*?)\n\s*```\s*$", re.S | re.I)

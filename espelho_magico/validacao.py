@@ -77,10 +77,20 @@ _RE_SECAO_RUIDO = re.compile(
     r"Advertise\s+with\b.*|"
     r"(?:[ÚU]ltima\s+chamada|Concorra\s+a|Sorteio)\b.*\biPhone\b.*|"
     r"Programa\s+de\s+indica[cç][aã]o.*|"
-    r"Indique\s+(?:amigos|e\s+ganhe|o\s+the\s+news).*"
+    r"Indique\s+(?:amigos|e\s+ganhe|o\s+the\s+news).*|"
+    r"D[eê]nius\s+Games(?:\b.*)?"
     r")$",
     re.I,
 )
+_RE_SECAO_CLICKBAIT = re.compile(r"^(?:Extras?|Quick\s+Takes?)$", re.I)
+_RE_CLICKBAIT_CHAMADA = (
+    r"^\s*(?:[-*•>]\s*)?\*{0,2}(?:"
+    r"PARA\s+(?:VER|CLICAR|LER|OUVIR|ASSISTIR|SABER|REFLETIR|ENTENDER)|"
+    r"DESCUBRA|NESTE\s+DIA|SAIBA\s+MAIS|VEJA\s+AQUI|CONFIRA"
+    r")\s*:\*{0,2}(?:\s+.*)?$"
+)
+_RE_CLICKBAIT_LINHA = re.compile(_RE_CLICKBAIT_CHAMADA)
+_RE_CLICKBAIT_LINHA_CI = re.compile(_RE_CLICKBAIT_CHAMADA, re.I)
 _RE_TITULO_PATROCINADOR = re.compile(
     r"^(#{2,3}\s+.+?)\s*(?:\(\s*(?:ARQ|Oferecimento|Patroc[ií]nio|Publieditorial|Sponsored|Ad)\s*\)|"
     r"[—\-–]\s*(?:Oferecimento|Patroc[ií]nio|Publieditorial)\b.*)$",
@@ -98,7 +108,7 @@ _RE_RUIDO = re.compile(
     r"concorrer\s+a\s+(?:um|uma)\s+\*{0,2}iPhone\b|"
     r"(?:para\s+)?receber\s+o\s+\*{0,2}the\s+news\*{0,2}\b|"
     r"(?:registrando|batendo|bater)\s+(?:o\s+|seu\s+)\*{0,2}Streak\*{0,2}\b)\b|"
-    r"^#{2,3}\s+Peak\s+Picks\b|"
+    r"^#{2,3}\s+(?:Peak\s+Picks|D[eê]nius\s+Games)\b|"
     r"^\s*(?:[-*•]\s*)?\*{0,2}(?:oferecimento|apresentado\s+por|sponsored\s+by|together\s+with|"
     r"presented\s+by|na\s+edi[cç][aã]o\s+de\s+hoje|in\s+today'?s\s+(?:edition|issue))\*{0,2}\s*:)",
     re.I | re.M,
@@ -644,7 +654,7 @@ PROMPT_ENQUETE = {
 }
 
 
-def _contexto_para_enquete(md, limite=6000):
+def _contexto_para_enquete(md, limite=3500):
     _, secoes = dividir_secoes(md)
     partes = []
     for s in secoes:
@@ -660,15 +670,18 @@ def _montar_bloco_enquete(resposta, idioma):
     """Valida a resposta da IA e devolve o bloco canônico da enquete (ou None se vier fora do formato)."""
     if not resposta:
         return None
-    linhas = [l.strip() for l in resposta.strip().strip("`").split("\n")]
-    opcoes = [re.sub(r"^\s*(?:[-*•]|\d+[.)])\s+", "", l) for l in linhas if _RE_BULLET.match(l)]
-    pergunta = next(
-        (l for l in linhas if l and not l.startswith("#") and not _RE_BULLET.match(l) and "?" in l),
-        None,
-    )
-    if not pergunta or len(opcoes) < 3:
+    linhas_raw = [l.rstrip() for l in resposta.strip().strip("`").split("\n")]
+    linhas = [l.strip() for l in _normalizar_linhas_enquete(linhas_raw) if l.strip()]
+    blocos_validos = []
+    for p_linhas, op_linhas in _extrair_blocos_enquete(linhas):
+        pergunta = next((l for l in p_linhas if l and not l.startswith("#") and "?" in l), None)
+        opcoes = [re.sub(r"^\s*(?:[-*•]|\d+[.)])\s+", "", l) for l in op_linhas]
+        if pergunta and len(opcoes) >= 3:
+            blocos_validos.append((pergunta, opcoes[:4]))
+    if not blocos_validos:
         return None
-    opcoes = opcoes[:5]
+    escolhido = next((b for b in blocos_validos if len(b[1]) >= 4), blocos_validos[0])
+    pergunta, opcoes = escolhido
     return "\n".join([f"## {TITULO_ENQUETE[idioma]}", "", pergunta, ""] + [f"- {o}" for o in opcoes])
 
 
@@ -858,7 +871,13 @@ def _remover_ruido_detalhado(md):
         linhas_filtradas.append(linha)
 
     novas = []
+    em_clickbait = False
     for linha in linhas_filtradas:
+        m_cab = _RE_CABECALHO_SEC.match(linha)
+        if m_cab:
+            nivel_c = len(m_cab.group(1))
+            tit_c = re.sub(r"[*_`]+", "", m_cab.group(2)).strip()
+            em_clickbait = nivel_c in (2, 3) and bool(_RE_SECAO_CLICKBAIT.match(tit_c))
         m_pp = _RE_TITULO_PEAK_PICKS.match(linha)
         if m_pp:
             removidos += 1
@@ -869,7 +888,7 @@ def _remover_ruido_detalhado(md):
             removidos += 1
             amostras.append(linha.strip()[:60])
             linha = m_pat.group(1).rstrip(" :-–—")
-        if _RE_RUIDO_LINHA.match(linha):
+        if _RE_RUIDO_LINHA.match(linha) or (em_clickbait and _RE_CLICKBAIT_LINHA_CI.match(linha)) or _RE_CLICKBAIT_LINHA.match(linha):
             removidos += 1
             amostras.append(linha.strip()[:60])
             continue
@@ -883,7 +902,26 @@ def _remover_ruido_detalhado(md):
             if not nova:
                 continue
         novas.append(nova)
-    return "\n".join(novas), {"removidos": removidos, "amostras": amostras}
+
+    limpas = []
+    i = 0
+    while i < len(novas):
+        linha = novas[i]
+        m_cab = _RE_CABECALHO_SEC.match(linha)
+        if m_cab and len(m_cab.group(1)) in (2, 3):
+            tit_c = re.sub(r"[*_`]+", "", m_cab.group(2)).strip()
+            if _RE_SECAO_CLICKBAIT.match(tit_c):
+                j = i + 1
+                while j < len(novas) and not novas[j].strip():
+                    j += 1
+                if j >= len(novas) or _RE_CABECALHO_SEC.match(novas[j]):
+                    removidos += 1
+                    amostras.append(f"seção '{tit_c[:45]}'")
+                    i = j
+                    continue
+        limpas.append(linha)
+        i += 1
+    return "\n".join(limpas), {"removidos": removidos, "amostras": amostras}
 
 
 def remover_ruido_residual(md):
@@ -1148,7 +1186,7 @@ def _reparar_integridade_com_ia(md, entrada, idioma, reparar):
             "Markdown COMPLETO restaurando apenas os fatos e números editoriais faltantes, mantendo o formato limpo "
             "de roteiro (título #, seções ##, tópicos em vez de tabelas, sem URLs e preservando Enquete do Dia/Daily Poll ao final). "
             "NUNCA restaure anúncios, patrocínios, taxas promocionais de marcas (ex.: ARQ, investback), sorteios de iPhone, "
-            "planos de assinatura (ex.: Peak Premium), mídia kit ou endereços postais."
+            "planos de assinatura (ex.: Peak Premium), promoções/guia de compras (ex.: Black Friday), mídia kit ou endereços postais."
         )
         conteudo = f"<rascunho_atual>\n{md}\n</rascunho_atual>\n\n<trechos_fonte>\n{trechos}\n</trechos_fonte>"
     else:
@@ -1159,7 +1197,7 @@ def _reparar_integridade_com_ia(md, entrada, idioma, reparar):
             "que contêm esses números editoriais omitidos (mantendo o mesmo título ## exato se já existir na pauta para "
             "completá-la, ou criando a seção ## omitida), em formato limpo para podcast (sem URLs nem tabelas). "
             "NUNCA restaure anúncios, patrocínios, taxas promocionais de marcas (ex.: ARQ, investback), sorteios de iPhone, "
-            "planos de assinatura (ex.: Peak Premium), mídia kit ou endereços postais."
+            "planos de assinatura (ex.: Peak Premium), promoções/guia de compras (ex.: Black Friday), mídia kit ou endereços postais."
         )
         conteudo = (
             f"<titulos_ja_extraidos>\n{titulos_atuais}\n</titulos_ja_extraidos>\n\n"
