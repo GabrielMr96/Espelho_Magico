@@ -55,7 +55,7 @@ _RE_IMAGEM_MD = re.compile(r"!\[[^\]]*\]\([^)]*\)")
 _RE_LINK_MD = re.compile(r"(?<!!)\[([^\]]+)\]\((?:https?://|www\.)[^)]*\)")
 _RE_URL_CRUA = re.compile(r"\s*\(?\b(?:https?://|www\.)\S+?\)?(?=[\s,;]|$)")
 _RE_URL_TEXTO = re.compile(r"https?://\S+|www\.\S+|\]\([^)]*\)")
-_RE_NUMERO = re.compile(r"\d+(?:[.,]\d+)*")
+_RE_NUMERO = re.compile(r"\d+(?:[.,]\d+|[\u00a0\u202f]\d{3})*")
 _RE_META_BLOCO = re.compile(r"<metadados>.*?</metadados>", re.S | re.I)
 _RE_TAGS_DOC = re.compile(r"</?(?:documento_entrada|metadados)>", re.I)
 _RE_IMG_DESC = re.compile(r"\[(?:Descrição de Imagem|Imagem):[^\]]*\]", re.I)
@@ -64,7 +64,7 @@ _RE_TEMPO_LEITURA = re.compile(
     r"^\s*\d+(?:\s*[–-]\s*\d+)?\s*(?:min|minutos?|minutes?)(?:\s+de\s+leitura)?\s*$",
     re.I | re.M,
 )
-_RE_HORA = re.compile(r"(?:\bàs\s+\d{1,2}[:h]\d{2}\b|\b\d{1,2}:\d{2}(?::\d{2})?\b)", re.I)
+_RE_HORA = re.compile(r"(?:\bàs\s+\d{1,2}h(?:\d{2})?\b|\bàs\s+\d{1,2}:\d{2}\b|\b\d{1,2}:\d{2}(?::\d{2})?\b)", re.I)
 _RE_DATA_NUM = re.compile(r"\b\d{1,2}/\d{1,2}(?:/\d{2,4})?\b")
 _RE_LEIA_TAMBEM = re.compile(
     r"^#{2,4}[ \t]*(?:Leia\s+também|Veja\s+também|Saiba\s+mais|Read\s+also|Related)\b[^\n]*"
@@ -78,7 +78,9 @@ _RE_SECAO_RUIDO = re.compile(
     r"(?:[ÚU]ltima\s+chamada|Concorra\s+a|Sorteio)\b.*\biPhone\b.*|"
     r"Programa\s+de\s+indica[cç][aã]o.*|"
     r"Indique\s+(?:amigos|e\s+ganhe|o\s+the\s+news).*|"
-    r"D[eê]nius\s+Games(?:\b.*)?"
+    r"D[eê]nius\s+Games(?:\b.*)?|"
+    r"Campanha\s+FOMO\s+Zero(?:\b.*)?|"
+    r"Dropped\s+by\b.*"
     r")$",
     re.I,
 )
@@ -108,10 +110,11 @@ _RE_RUIDO = re.compile(
     r"concorrer\s+a\s+(?:um|uma)\s+\*{0,2}iPhone\b|"
     r"(?:para\s+)?receber\s+o\s+\*{0,2}the\s+news\*{0,2}\b|"
     r"(?:registrando|batendo|bater)\s+(?:o\s+|seu\s+)\*{0,2}Streak\*{0,2}\b|"
-    r"My\s+Minerva\s+Foods)\b|"
+    r"My\s+Minerva\s+Foods|Kit\s+Anti\s+FOMO\s+Club)\b|"
     r"👉\s*(?:Veja|Confira|Acesse|Clique)\s+aqui\b|"
-    r"O\s+que\s+voc[eê]\s+achou\s+d[ae]\s+edi[cç][aã]o\s+de\s+hoje\??|"
-    r"^#{2,3}\s+(?:Peak\s+Picks|D[eê]nius\s+Games)\b|"
+    r"O\s+que\s+(?:voc[eê]\s+)?achou\s+d[ae]\s+edi[cç][aã]o\s+de\s+hoje\??|"
+    r"Dropped\s+by\b|"
+    r"^#{2,3}\s+(?:Peak\s+Picks|D[eê]nius\s+Games|Campanha\s+FOMO\s+Zero)\b|"
     r"^\s*(?:[-*•]\s*)?\*{0,2}(?:oferecimento|apresentado\s+por|sponsored\s+by|together\s+with|"
     r"presented\s+by|na\s+edi[cç][aã]o\s+de\s+hoje|in\s+today'?s\s+(?:edition|issue))\*{0,2}\s*:)",
     re.I | re.M,
@@ -128,9 +131,15 @@ _RE_RUIDO_LINHA = re.compile(
     r"continue\s+lendo|keep\s+reading|indique\s+(?:um\s+amigo|e\s+ganhe)|"
     r"refer\s+a\s+friend|use\s+o\s+cupom)\b|"
     r"Next\s+week,\s+a\s+(?:meditation|look|deep\s+dive|tour|preview)\s+on\b|"
-    r"O\s+que\s+voc[eê]\s+achou\s+d[ae]\s+edi[cç][aã]o\s+de\s+hoje\??\s*\*{0,2}$|"
-    r"(?:🥇|🥈|🥉)\s*(?:Gostei|Bem\s+mais\s+ou\s+menos|Mais\s+ou\s+menos|N[aã]o\s+gostei)\b[^.\n]*$)|"
-    r".*?(?:concorrer\s+a\s+(?:um|uma)\s+\*{0,2}iPhone\b|"
+    r"O\s+que\s+(?:voc[eê]\s+)?achou\s+d[ae]\s+edi[cç][aã]o\s+de\s+hoje\??\s*\*{0,2}$|"
+    r"(?:🥇|🥈|🥉)\s*(?:Gostei|Bem\s+mais\s+ou\s+menos|Mais\s+ou\s+menos|N[aã]o\s+gostei)\b[^.\n]*$|"
+    r"🤩\s*Baita\b[^.\n]*$|"
+    r"(?:EDI[ÇC][ÃA]O\s*#\d+\b|Essa\s+news\s+foi\s+encaminhada|Conhe[çc]a\s+as\s+outras\s+news|"
+    r"Elevando\s+o\s+QI\s+da\s+internet|Dropped\s+pelos\s+humanos|Se\s+amarra\s+em\s+Youtube|"
+    r"Rod\.\s+[^,\n]+,\s*\d+\b)|"
+    r"Quer\s+fazer\s+sua\s+marca\b.*\bAnuncie\b)|"
+    r".*?(?:\b\d{5}-\d{3}\b(?:,\s*(?:Brazil|Brasil))?\s*$|"
+    r"concorrer\s+a\s+(?:um|uma)\s+\*{0,2}iPhone\b|"
     r"indicando\b.*?\b(?:para\s+receber\s+o\s+\*{0,2}the\s+news\*{0,2}|\*{0,2}Streak\*{0,2})|"
     r"(?:registrando|batendo|bater)\s+(?:o\s+|seu\s+)\*{0,2}Streak\*{0,2}\b|"
     r"\bhub\s+gratuito\b.*?(?:te\s+mostra|confira|veja\s+aqui)|"
@@ -708,6 +717,12 @@ def enquete_de_fallback(md, idioma="pt"):
 
 # --- Verificações e correção automática --------------------------------------
 
+_RE_BLOCO_PATROCINADO_FONTE = re.compile(
+    r"^#{1,5}[ \t]*(?:DROPPED[ \t]+BY|SPONSORED[ \t]+BY|CAMPANHA[ \t]+FOMO[ \t]+ZERO)\b.*?(?=\n#{5}[ \t]+\S|\Z)",
+    re.S | re.I | re.M,
+)
+
+
 def _filtrar_para_integridade(texto, eh_entrada=False):
     """Remove metadados de e-mail, URLs, timestamps e caixas 'Leia também' antes de contar números."""
     texto = _RE_META_BLOCO.sub(" ", texto or "")
@@ -715,6 +730,7 @@ def _filtrar_para_integridade(texto, eh_entrada=False):
     texto = _RE_URL_TEXTO.sub(" ", texto)
     texto = _RE_IMG_DESC.sub(" ", texto)
     if eh_entrada:
+        texto = _RE_BLOCO_PATROCINADO_FONTE.sub(" ", texto)
         texto = _RE_LEIA_TAMBEM.sub(" ", texto)
         texto, _ = remover_ruido_residual(texto)
     texto = _RE_GERADO_EM.sub(" ", texto)
@@ -743,7 +759,7 @@ def _numeros(texto):
     texto = _RE_URL_TEXTO.sub(" ", texto or "")
     mapa = {}
     for bruto in _RE_NUMERO.findall(texto):
-        normal = re.sub(r"[.,]", "", bruto).lstrip("0")
+        normal = re.sub(r"[.,\u00a0\u202f]", "", bruto).lstrip("0")
         if len(normal) >= 2:
             mapa.setdefault(normal, bruto)
     return mapa

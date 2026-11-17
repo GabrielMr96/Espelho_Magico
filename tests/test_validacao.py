@@ -576,9 +576,41 @@ def test_remove_minerva_cta_e_caixa_avaliacao_edicao():
     assert "Veja aqui" not in final
     assert "O que você achou da edição de hoje" not in final
     assert "Gostei" not in final
-    assert "proteínas" in final
+    assert "Proteínas" in final or "proteínas" in final
     assert "Excelente resumo!" in final
     assert _status(rel, "Ruído") == CORRIGIDO
+    assert not rel.tem_aviso
+
+
+def test_integridade_ignora_espaco_inseparavel_endereco_e_dropped_by():
+    entrada = (
+        "# 17 de novembro de 2026\n\n"
+        "EDIÇÃO #259 • 17/11/2026 • THEDROPS.COM.BR\n\n"
+        "## IA na pesquisa\n\n"
+        "OpenAI ofereceu acesso para até 200.000 pesquisadores, cortou o tempo de 475 para 24 minutos e marcou 1.686 pontos.\n\n"
+        "##### CAMPANHA FOMO ZERO\n\n"
+        "# A IA trabalha 24/7!\n\n"
+        "Gaste US$ 3 trilhões e entre no Kit Anti FOMO Club.\n\n"
+        "##### DROPPED BY GEOAMBIENTE\n\n"
+        "# Sua IA conversa\n\n"
+        "Dia 19/11, às 10h. Garanta sua vaga.\n\n"
+        "*Quer fazer sua marca conversar com +300 mil líderes? Anuncie.*\n"
+        "Rod. Francisco Magno Vieira, 4397 - Sl 202 - Campeche\n"
+        "Florianópolis, SC 88065-000, Brazil\n"
+    )
+    md = (
+        "# 17 de novembro de 2026\n\n"
+        "## IA na pesquisa\n\n"
+        "OpenAI ofereceu acesso para até 200\u202f000 pesquisadores, cortou o tempo de 475 para 24 minutos e marcou 1.686 pontos.\n\n"
+        "## Campanha FOMO Zero\n\n"
+        "Gaste US$ 3 trilhões e entre no Kit Anti FOMO Club.\n\n"
+        "## Enquete do Dia\n\nQual impacto?\n\n- Alto\n- Médio\n- Baixo\n- Nenhum\n"
+    )
+    final, rel = aplicar_dupla_verificacao(md, entrada=entrada, idioma="pt", extrair_data=extrair_data_de_texto)
+    assert "Campanha FOMO Zero" not in final
+    assert "200\u202f000" in final
+    assert _status(rel, "Ruído") == CORRIGIDO
+    assert _status(rel, "Integridade") == OK
     assert not rel.tem_aviso
 
 
