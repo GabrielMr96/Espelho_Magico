@@ -30,11 +30,11 @@ from .llm import (
     verificar_completude,
 )
 from .log import console, contexto_grupo, escape, log_arquivo, logger
-from .validacao import aplicar_dupla_verificacao, contar_noticias, renderizar_relatorio
+from .validacao import _numeros, aplicar_dupla_verificacao, contar_noticias, renderizar_relatorio
 
 SEPARADOR = "\n\n---\n\n"
 MINIMO_CARACTERES_EDICAO = 250
-ETAPAS_GRUPO = 5  # pré-limpeza/IA · dupla verificação · salvar · Drive/Gmail · concluído
+ETAPAS_GRUPO = 6  # pré-limpeza · IA · consolidação · dupla verificação · salvar · Drive/concluído
 
 _INSTRUCAO_PARTE = (
     "<modo_parte>\n"
@@ -101,6 +101,7 @@ class ResultadoGrupo:
     noticias: int = 0
     verificacao: str = ""
     tem_aviso: bool = False
+    caracteres: int = 0
 
     def __str__(self):
         return self.mensagem
@@ -816,7 +817,216 @@ def _remover_paragrafos_redundantes(texto):
     return re.sub(r"\n{3,}", "\n\n", "\n\n".join(p for p in mantidas if p)).strip()
 
 
-def deduplicar_secoes(texto):
+_STOPWORDS_TOPICO = _STOPWORDS_RESUMO | {
+    "nesta", "nesse", "nisso", "disso", "deste", "agencia", "agência", "afirmou",
+    "revelou", "apontou", "mostrou", "empresa", "empresas", "governo", "estados",
+    "unidos", "americana", "americano", "bilhões", "bilhoes", "milhões", "milhoes",
+    "anuncia", "lança", "lanca", "chega", "volta", "primeira", "primeiro",
+    "poderia", "deveria", "terão", "terao", "foram", "ações", "acoes", "plano",
+    "grupo", "setor", "ontem", "agora",
+}
+
+_SECOES_GIRO = (
+    "need to know", "giro de notícias", "giro de noticias", "um giro pelas notícias",
+    "um giro pelas noticias", "giro pelas notícias", "tour de manchetes", "tour de headlines",
+    "headlines", "radar", "radar headlines", "quick takes", "quick picks",
+    "destaques rápidos", "destaques rapidos",
+)
+
+_PREFIXOS_ESPECIAIS_NAO_FUNDIR = (
+    "resultados", "fechamento de mercado", "markets", "agenda", "voz dos",
+    "listener", "enquete", "daily poll", "aspas do dia", "quote of the day",
+    "curiosidade", "game do", "trivia", "drop the pin", "around the web",
+    "confira a lista", "panorama",
+)
+
+
+def _palavras_topico(texto):
+    """Extrai palavras relevantes de tópico (>= 5 letras, excluindo stopwords genéricas)."""
+    return {
+        w.lower()
+        for w in re.findall(r"[a-záéíóúâêôãõçA-ZÁÉÍÓÚÂÊÔÃÕÇ]{5,}", texto or "")
+        if w.lower() not in _STOPWORDS_TOPICO
+    }
+
+
+def _eh_secao_giro(titulo):
+    tit = (titulo or "").strip().lower()
+    return any(tit == g or tit.startswith(g) for g in _SECOES_GIRO)
+
+
+def _eh_secao_especial_nao_fundir(titulo):
+    tit = (titulo or "").strip().lower()
+    if not tit:
+        return True
+    return _eh_secao_giro(tit) or any(tit.startswith(p) for p in _PREFIXOS_ESPECIAIS_NAO_FUNDIR)
+
+
+def _dividir_h2(texto):
+    secoes = [{"titulo": None, "linhas": []}]
+    for linha in texto.split("\n"):
+        if linha.startswith("## "):
+            secoes.append({"titulo": linha[3:].strip(), "linhas": [linha]})
+        else:
+            secoes[-1]["linhas"].append(linha)
+    return secoes
+
+
+def _absorver_bullets_redundantes(secoes):
+    """Remove bullets curtos em seções de giro já cobertos integralmente em outra seção do documento."""
+    textos_alvo = []
+    for idx, s in enumerate(secoes):
+        tit = (s["titulo"] or "").strip().lower()
+        if not tit or any(tit.startswith(p) for p in ("resultados", "fechamento de mercado", "markets", "agenda", "voz dos", "listener", "enquete", "daily poll")):
+            continue
+        corpo = "\n".join(s["linhas"])
+        textos_alvo.append((idx, corpo.lower(), set(_numeros(corpo))))
+
+    absorvidos = []
+    nova_lista = []
+    for i, s in enumerate(secoes):
+        if not s["titulo"] or not _eh_secao_giro(s["titulo"]):
+            nova_lista.append(s)
+            continue
+
+        novas_linhas = [s["linhas"][0]]
+        bullets_restantes = 0
+        for linha in s["linhas"][1:]:
+            if not re.match(r"^\s*[-*•]\s+", linha):
+                novas_linhas.append(linha)
+                continue
+            b_limpo = re.sub(r"^\s*[-*•]\s*(?:\*\*→\*\*\s*|→\s*)?", "", linha).strip()
+            if not b_limpo or len(b_limpo) > 240:
+                novas_linhas.append(linha)
+                bullets_restantes += 1
+                continue
+
+            pal_b = _palavras_topico(b_limpo)
+            nums_b = set(_numeros(b_limpo))
+            eh_redundante = False
+            if len(pal_b) >= 3:
+                for j, txt_j_low, nums_j in textos_alvo:
+                    if j == i:
+                        continue
+                    if nums_b and (nums_b - nums_j):
+                        continue
+                    hits = [w for w in pal_b if w in txt_j_low]
+                    prop = len(hits) / len(pal_b)
+                    tem_proprio = bool(re.search(r"(?<!^)\b[A-ZÁÉÍÓÚÂÊÔÃÕÇ][a-záéíóúâêôãõç]{3,}", b_limpo))
+                    if (len(hits) >= 3 and prop >= 0.60) or (len(hits) >= 2 and len(pal_b) == 3 and prop >= 0.66 and tem_proprio):
+                        eh_redundante = True
+                        break
+            if eh_redundante:
+                absorvidos.append(b_limpo[:60])
+                continue
+            novas_linhas.append(linha)
+            bullets_restantes += 1
+
+        tem_conteudo = any(
+            l.strip() and l.strip() != "---" and not l.strip().startswith("#")
+            for l in novas_linhas[1:]
+        )
+        if bullets_restantes > 0 or tem_conteudo:
+            nova_lista.append({"titulo": s["titulo"], "linhas": novas_linhas})
+    return nova_lista, absorvidos
+
+
+def consolidar_secoes_mesmo_assunto_detalhado(texto):
+    """Concatena seções `##` do mesmo assunto sob `###` e absorve bullets redundantes sem perder números.
+
+    Retorna `(texto_consolidado, {"secoes_concatenadas": [...], "bullets_absorvidos": [...]})`.
+    """
+    info = {"secoes_concatenadas": [], "bullets_absorvidos": []}
+    if not texto or not texto.strip():
+        return texto, info
+
+    nums_antes = set(_numeros(texto))
+    secoes, absorvidos = _absorver_bullets_redundantes(_dividir_h2(texto))
+    info["bullets_absorvidos"] = absorvidos
+
+    consolidadas = []
+    meta_norm = []
+    for s in secoes:
+        tit = s["titulo"]
+        if _eh_secao_especial_nao_fundir(tit):
+            consolidadas.append(s)
+            meta_norm.append(None)
+            continue
+
+        t_nov = _palavras_topico(tit)
+        miolo_nov, rabo_nov = _separar_rabo(s["linhas"][1:])
+        corpo_nov_txt = "\n".join(miolo_nov).strip()
+        c_nov = _palavras_topico(corpo_nov_txt)
+
+        idx_alvo = None
+        if corpo_nov_txt:
+            for k, meta in enumerate(meta_norm):
+                if meta is None:
+                    continue
+                t_ant, c_ant = meta
+                comum_tit = t_ant & t_nov
+                if not comum_tit:
+                    continue
+                comum_total = (t_ant | c_ant) & (t_nov | c_nov)
+                comum_corpo = c_ant & c_nov
+                ratio_corpo = len(comum_corpo) / max(1, min(len(c_ant), len(c_nov)))
+                if (len(comum_tit) >= 2 and len(comum_total) >= 5) or (
+                    len(comum_tit) >= 1 and len(comum_corpo) >= 6 and ratio_corpo >= 0.45
+                ):
+                    idx_alvo = k
+                    break
+
+        if idx_alvo is None:
+            consolidadas.append(s)
+            meta_norm.append((t_nov, c_nov))
+            continue
+
+        alvo = consolidadas[idx_alvo]
+        conteudo_alvo, rabo_alvo = _separar_rabo(alvo["linhas"])
+        vistos_alvo = [
+            (_norm_paragrafo(b), _tokens_paragrafo(_norm_paragrafo(b)))
+            for b in re.split(r"\n{2,}", "\n".join(conteudo_alvo[1:]))
+            if len(_norm_paragrafo(b)) >= 55
+        ]
+        blocos_novos = []
+        for b in re.split(r"\n{2,}", corpo_nov_txt):
+            b_str = b.strip()
+            if not b_str:
+                continue
+            eh_prosa = not b_str.startswith("#") and not re.match(r"^\s*(?:[-*•]|\d+[.)])\s+", b_str) and b_str != "---"
+            nb = _norm_paragrafo(b_str)
+            if eh_prosa and len(nb) >= 55 and _paragrafo_ja_visto(nb, _tokens_paragrafo(nb), vistos_alvo):
+                continue
+            blocos_novos.append(b_str)
+
+        if blocos_novos:
+            extra_linhas = [f"### {tit}", ""] + "\n\n".join(blocos_novos).split("\n")
+            alvo["linhas"] = conteudo_alvo + [""] + extra_linhas + (rabo_nov or rabo_alvo)
+            t_ant, c_ant = meta_norm[idx_alvo]
+            meta_norm[idx_alvo] = (t_ant | t_nov, c_ant | c_nov)
+        elif rabo_nov and not rabo_alvo:
+            alvo["linhas"] = conteudo_alvo + rabo_nov
+        info["secoes_concatenadas"].append(f"{tit} → {alvo['titulo']}")
+
+    reconstruido = "\n\n".join(
+        re.sub(r"\n{3,}", "\n\n", "\n".join(s["linhas"]).strip())
+        for s in consolidadas
+        if any(l.strip() for l in s["linhas"])
+    )
+    reconstruido = re.sub(r"\n{3,}", "\n\n", reconstruido).strip()
+
+    if nums_antes - set(_numeros(reconstruido)):
+        return texto, {"secoes_concatenadas": [], "bullets_absorvidos": []}
+    return reconstruido, info
+
+
+def consolidar_secoes_mesmo_assunto(texto):
+    """Versão simplificada de `consolidar_secoes_mesmo_assunto_detalhado`: retorna apenas o Markdown."""
+    novo, _ = consolidar_secoes_mesmo_assunto_detalhado(texto)
+    return novo
+
+
+def deduplicar_secoes(texto, consolidar=True):
     """Remove seções com título repetido e parágrafos/seções redundantes sem perder conteúdo.
 
     - Títulos de nível 2 (##) são deduplicados no escopo global do documento.
@@ -865,7 +1075,8 @@ def deduplicar_secoes(texto):
 
     linhas = [linha for b in saida for linha in b["linhas"]]
     unificado = re.sub(r"\n{3,}", "\n\n", "\n".join(linhas)).strip()
-    return _remover_paragrafos_redundantes(unificado)
+    unificado = _remover_paragrafos_redundantes(unificado)
+    return consolidar_secoes_mesmo_assunto(unificado) if consolidar else unificado
 
 
 def inserir_apos_h1(corpo, bloco_extra):
@@ -904,7 +1115,7 @@ def aplicar_cabecalho_edicao(texto, nome_final):
     return f"# {identificador}\n\n{texto_limpo}"
 
 
-def sanitizar_markdown_final(texto):
+def sanitizar_markdown_final(texto, consolidar=True):
     """Higieniza o Markdown final antes de salvar e subir para o Drive:
     - Remove eventuais cercas ```markdown externas devolvidas pela IA.
     - Garante no máximo 1 título de nível 1 (#) no documento (rebaixa H1 extras para H2).
@@ -963,7 +1174,7 @@ def sanitizar_markdown_final(texto):
         linhas_processadas.append(linha)
 
     limpo = "\n".join(linhas_processadas)
-    limpo = deduplicar_secoes(limpo)
+    limpo = deduplicar_secoes(limpo, consolidar=consolidar)
     return re.sub(r"\n{3,}", "\n\n", limpo).strip()
 
 
@@ -1203,7 +1414,7 @@ class Pipeline:
             return ResultadoGrupo(nome, "erro", f"❌ Erro ao gerar {cfg.nome_final}", "Falha na IA (e-mails continuam não lidos)",
                                   time.time() - inicio)
 
-        corpo_editorial = sanitizar_markdown_final(SEPARADOR.join(textos))
+        corpo_editorial = sanitizar_markdown_final(SEPARADOR.join(textos), consolidar=False)
         if eh_extracao_vazia_ou_invalida(corpo_editorial):
             logger.warning(
                 f"[bold yellow]⚠ E-mail(s) sem conteúdo editorial válido ({len(corpo_editorial)} caracteres). "
@@ -1218,13 +1429,23 @@ class Pipeline:
                                   "Ignorado: e-mail sem notícias", time.time() - inicio)
 
         if resultados_futebol and "## RESULTADOS RECENTES" in resultados_futebol:
-            final = sanitizar_markdown_final(inserir_apos_h1(corpo_editorial, resultados_futebol))
+            final = sanitizar_markdown_final(inserir_apos_h1(corpo_editorial, resultados_futebol), consolidar=False)
         else:
             final = corpo_editorial
 
+        self._etapa(cfg, "🔗 consolidando pautas do mesmo assunto", 2)
+        final, info_consol = consolidar_secoes_mesmo_assunto_detalhado(final)
+        if info_consol["secoes_concatenadas"] or info_consol["bullets_absorvidos"]:
+            partes_log = []
+            if info_consol["secoes_concatenadas"]:
+                partes_log.append(f"{len(info_consol['secoes_concatenadas'])} seção(ões) concatenada(s)")
+            if info_consol["bullets_absorvidos"]:
+                partes_log.append(f"{len(info_consol['bullets_absorvidos'])} bullet(s) curto(s) absorvido(s)")
+            logger.info(f"[cyan]🔗 Consolidação de pautas: {', '.join(partes_log)} (sem perda de conteúdo)[/cyan]")
+
         # Dupla verificação das regras de extração (corrige o que é seguro e relata o resto)
-        self._etapa(cfg, "🔎 dupla verificação das regras", 2)
-        logger.info("[cyan]🔎 Dupla verificação: conferindo estrutura, integridade, idioma e enquete...[/cyan]")
+        self._etapa(cfg, "🔎 dupla verificação (regras e cobertura)", 3)
+        logger.info("[cyan]🔎 Dupla verificação: conferindo estrutura, cobertura das pautas, idioma e enquete...[/cyan]")
 
         def notificar_verificacao(evento, regra, **dados):
             rotulo = escape(f"[{regra}]")
@@ -1258,21 +1479,29 @@ class Pipeline:
             reparar=reparar_com_ia if self.extrator else None,
             notificar=notificar_verificacao,
         )
+        final = consolidar_secoes_mesmo_assunto(final)
         final = aplicar_cabecalho_edicao(final, cfg.nome_final)
         console.print(renderizar_relatorio(relatorio, nome))
         log_arquivo.info(f"Dupla verificação · {nome} · {relatorio.resumo}\n{relatorio.como_texto()}")
         noticias = contar_noticias(final)
+        kb = _formatar_kb(len(final))
 
-        self._etapa(cfg, "💾 salvando Markdown", 3)
+        self._etapa(cfg, "💾 salvando Markdown", 4)
         self.pasta_saida.mkdir(parents=True, exist_ok=True)
         caminho = self.pasta_saida / cfg.nome_final
         caminho.write_text(final + "\n", encoding="utf-8")
-        logger.info(f"[bold green]💾 Salvo:[/bold green] [bold]{escape(str(caminho))}[/bold] [dim]({len(final):,} caracteres)[/dim]")
+        logger.info(f"[bold green]💾 Salvo:[/bold green] [bold]{escape(str(caminho))}[/bold] [dim]({len(final):,} caracteres · {kb})[/dim]")
 
-        base = dict(segundos=0.0, noticias=noticias, verificacao=relatorio.resumo, tem_aviso=relatorio.tem_aviso)
+        base = dict(
+            segundos=0.0,
+            noticias=noticias,
+            verificacao=relatorio.resumo,
+            tem_aviso=relatorio.tem_aviso,
+            caracteres=len(final),
+        )
         if self.opcoes.dry_run:
             logger.info("[dim]🧪 Dry-run: sem upload, sem marcar e-mails e sem atualizar controle do futebol[/dim]")
-            self._etapa(cfg, "[green]✔ concluído (dry-run)[/green]", ETAPAS_GRUPO)
+            self._etapa(cfg, f"[green]✔ concluído · {kb} (dry-run)[/green]", ETAPAS_GRUPO)
             base["segundos"] = time.time() - inicio
             return ResultadoGrupo(nome, "dry", f"🧪 {cfg.nome_final} gerado em modo dry-run", "Gerado (dry-run, sem Drive)", **base)
 
@@ -1282,7 +1511,7 @@ class Pipeline:
             except Exception as e:
                 logger.warning(f"[yellow]⚠ Erro ao salvar controle do futebol: {escape(str(e))}[/yellow]")
 
-        self._etapa(cfg, "☁ enviando ao Drive e marcando e-mails", 4)
+        self._etapa(cfg, "☁ enviando ao Drive e marcando e-mails", 5)
         if self.drive:
             upload_para_drive(self.drive, caminho, cfg.nome_final)
         if self.gmail:
@@ -1290,7 +1519,7 @@ class Pipeline:
                 if email_item.get("id"):
                     marcar_como_lido(self.gmail, email_item["id"])
 
-        self._etapa(cfg, "[green]✔ concluído[/green]", ETAPAS_GRUPO)
+        self._etapa(cfg, f"[green]✔ concluído · {kb}[/green]", ETAPAS_GRUPO)
         base["segundos"] = time.time() - inicio
         parcial = len(emails_ok) < n_emails
         if parcial:
@@ -1308,8 +1537,12 @@ class Pipeline:
 
         resultados = []
         with Progress(
-            SpinnerColumn(), TextColumn("{task.description}"), BarColumn(bar_width=18),
-            TaskProgressColumn(), TimeElapsedColumn(), console=console,
+            SpinnerColumn(style="cyan"),
+            TextColumn("{task.description}"),
+            BarColumn(bar_width=20, style="dim", complete_style="cyan", finished_style="green"),
+            TaskProgressColumn(),
+            TimeElapsedColumn(),
+            console=console,
         ) as progress:
             self._progress = progress
             self._tarefas = {
@@ -1364,44 +1597,109 @@ def _painel_configuracao(opcoes):
     return Panel(grade, title=titulo, title_align="left", border_style="cyan", expand=False)
 
 
+def _formatar_kb(caracteres):
+    """Formata contagem de caracteres/bytes aproximada em KB com vírgula decimal."""
+    return f"{caracteres / 1024:.1f} KB".replace(".", ",")
+
+
+def _resumo_datas_grupo(emails):
+    """Formata as datas das edições de um grupo em ordem cronológica (ex.: '17/11 Noite, 18/11')."""
+    if not emails:
+        return "—"
+    rotulos = []
+    for item in emails:
+        dt = None
+        if item.get("data"):
+            try:
+                dt = email.utils.parsedate_to_datetime(item["data"])
+            except Exception:
+                dt = None
+        assunto = (item.get("assunto") or "").lower()
+        if dt is not None:
+            sufixo = " Noite" if ("night" in assunto or "noite" in assunto or dt.hour >= 17) else ""
+            rotulos.append(f"{dt.day:02d}/{dt.month:02d}{sufixo}")
+        else:
+            d = extrair_data_de_texto(item.get("assunto", ""))
+            rotulos.append(f"{d.day:02d}/{d.month:02d}" if d else "—")
+    vistos = list(dict.fromkeys(rotulos))
+    return ", ".join(vistos[:3]) + ("…" if len(vistos) > 3 else "")
+
+
 def _tabela_plano(configs):
-    tabela = Table(title="🗂  Programas a processar", title_justify="left", title_style="bold",
-                   box=box.SIMPLE_HEAVY, expand=False)
+    tabela = Table(
+        title="🗂  Plano de extração",
+        title_justify="left",
+        title_style="bold cyan",
+        box=box.ROUNDED,
+        border_style="cyan",
+        expand=False,
+    )
     tabela.add_column("#", justify="right", style="dim")
     tabela.add_column("Programa", style="bold")
     tabela.add_column("Fonte")
+    tabela.add_column("Edições · Datas")
     tabela.add_column("Itens", justify="center")
     tabela.add_column("Modo")
     tabela.add_column("Idioma", justify="center")
     for i, cfg in enumerate(configs, 1):
         da_web = any(not e.get("id") for e in cfg.emails)
         fonte = "🌐 site oficial" if da_web else "📧 Gmail"
-        modo = "unificado" if cfg.unificar else ("separado" if len(cfg.emails) > 1 else "único")
+        modo = "🔗 unificado" if cfg.unificar else ("✂ separado" if len(cfg.emails) > 1 else "📄 único")
         idioma = "🇬🇧 EN" if (cfg.chave or "").lower() in config.PREFIXOS_INGLES else "🇧🇷 PT"
-        tabela.add_row(str(i), escape(Path(cfg.nome_final).stem), fonte, str(len(cfg.emails)), modo, idioma)
+        tabela.add_row(
+            str(i),
+            escape(Path(cfg.nome_final).stem),
+            fonte,
+            _resumo_datas_grupo(cfg.emails),
+            str(len(cfg.emails)),
+            modo,
+            idioma,
+        )
     return tabela
 
 
 def _tabela_resumo(resultados, total_segundos):
-    tabela = Table(title="📊 Resumo do processamento", title_justify="left", title_style="bold cyan",
-                   box=box.ROUNDED, expand=False)
+    tabela = Table(
+        title="📊 Resumo do processamento",
+        title_justify="left",
+        title_style="bold cyan",
+        box=box.ROUNDED,
+        border_style="cyan",
+        expand=False,
+    )
     tabela.add_column("", justify="center")
     tabela.add_column("Programa", style="bold")
     tabela.add_column("Notícias", justify="center")
+    tabela.add_column("Tamanho", justify="right")
     tabela.add_column("Dupla verificação")
     tabela.add_column("Tempo", justify="right")
     tabela.add_column("Resultado")
+    total_noticias = 0
+    total_chars = 0
     for r in sorted(resultados, key=lambda x: x.nome):
         verif = r.verificacao or "—"
         if r.verificacao:
             verif = f"[yellow]{verif}[/yellow]" if r.tem_aviso else f"[green]{verif}[/green]"
         cor = {"ok": "green", "dry": "green", "parcial": "yellow", "ignorado": "yellow", "erro": "red"}.get(r.status, "white")
         tempo = f"{int(r.segundos // 60)}m{int(r.segundos % 60):02d}s" if r.segundos else "—"
+        tamanho = _formatar_kb(r.caracteres) if r.caracteres else "—"
+        total_noticias += r.noticias or 0
+        total_chars += r.caracteres or 0
         tabela.add_row(
-            _ICONE_STATUS.get(r.status, "•"), escape(r.nome), str(r.noticias) if r.noticias else "—",
-            verif, tempo, f"[{cor}]{escape(r.resumo or r.mensagem)}[/{cor}]",
+            _ICONE_STATUS.get(r.status, "•"),
+            escape(r.nome),
+            str(r.noticias) if r.noticias else "—",
+            tamanho,
+            verif,
+            tempo,
+            f"[{cor}]{escape(r.resumo or r.mensagem)}[/{cor}]",
         )
-    tabela.caption = f"⏱ Tempo total: {int(total_segundos // 60)}min {int(total_segundos % 60)}s"
+    resumo_totais = f"⏱ Tempo total: {int(total_segundos // 60)}min {int(total_segundos % 60)}s · {len(resultados)} programa(s)"
+    if total_noticias:
+        resumo_totais += f" · {total_noticias} notícia(s)"
+    if total_chars:
+        resumo_totais += f" · {_formatar_kb(total_chars)}"
+    tabela.caption = resumo_totais
     tabela.caption_justify = "left"
     return tabela
 

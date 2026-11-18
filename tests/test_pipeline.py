@@ -545,6 +545,67 @@ def test_preparar_grupos_ordena_noite_anterior_antes_da_manha_hoje(tmp_path):
     assert [e["id"] for e in cfgs_gmail[0].emails] == ["m1", "m2"]
 
 
+def test_consolidar_secoes_mesmo_assunto_concatena_e_absorve_bullets_sem_perder_numeros():
+    from espelho_magico.pipeline import consolidar_secoes_mesmo_assunto_detalhado
+
+    md = (
+        "# 18 de novembro de 2026\n\n"
+        "## Need to Know\n\n"
+        "- **→** Nvidia avalia retorno de executivo ao conselho\n"
+        "- **→** Crise logística da Apple afeta 40 mil envios de iPhone nas fábricas\n"
+        "- **→** Greve portuária afeta 12 navios no porto sul\n"
+        "- **→** Nova linha de metrô abre hoje\n\n"
+        "## Crise na logística da Apple na Ásia\n\n"
+        "A Apple revisou os envios de iPhone após atrasos nas fábricas de fornecedores na Ásia.\n\n"
+        "## Giro pelo mundo\n\n"
+        "**Nvidia:** O conselho debate o retorno de seu fundador em reunião extraordinária na Califórnia.\n\n"
+        "## Atrasos na logística da Apple\n\n"
+        "Os fornecedores da Apple confirmaram que os envios de iPhone serão normalizados nas fábricas até sexta-feira.\n\n"
+        "## Enquete do Dia\n\nQual tema importa mais?\n\n- Logística\n- Porto\n- Metrô\n- Outro\n"
+    )
+    consolidado, info = consolidar_secoes_mesmo_assunto_detalhado(md)
+    # As duas seções da Apple sobre o mesmo assunto devem concatenar em uma só com subtópico ###
+    assert len(info["secoes_concatenadas"]) == 1
+    h2s = [l for l in consolidado.splitlines() if l.startswith("## ")]
+    assert len(h2s) == 4  # Need to Know, Apple, Giro, Enquete
+    assert "atrasos nas fábricas de fornecedores na Ásia" in consolidado
+    assert "normalizados nas fábricas até sexta-feira" in consolidado
+    assert "### Atrasos na logística da Apple" in consolidado
+    # Bullet curto sem número novo já coberto em Giro é absorvido; bullet com número inédito ('40') é preservado
+    assert "Nvidia avalia retorno" not in consolidado
+    assert "40 mil envios" in consolidado
+    assert "12 navios" in consolidado
+    assert "Nova linha de metrô abre hoje" in consolidado
+
+
+def test_apresentacao_terminal_plano_e_resumo():
+    from rich.console import Console
+    from espelho_magico.pipeline import (
+        ConfigGrupo,
+        ResultadoGrupo,
+        _resumo_datas_grupo,
+        _tabela_plano,
+        _tabela_resumo,
+    )
+
+    emails = [
+        {"id": None, "assunto": "Boletim NIGHT", "data": "Tue, 17 Nov 2026 09:00:00 +0000"},
+        {"id": "g1", "assunto": "Boletim manhã", "data": "Wed, 18 Nov 2026 06:00:00 -0300"},
+    ]
+    assert _resumo_datas_grupo(emails) == "17/11 Noite, 18/11"
+
+    cfg = ConfigGrupo(chave="1440", emails=emails, titulo_base="Boletim Fora de Ordem", nome_final="Boletim Fora de Ordem #323.md", unificar=True)
+    res = [ResultadoGrupo(nome="Boletim Fora de Ordem #323", status="ok", mensagem="OK", resumo="Enviado", segundos=65.0, noticias=14, verificacao="9 ✔", caracteres=15360)]
+
+    buf = Console(record=True, width=160)
+    buf.print(_tabela_plano([cfg]))
+    buf.print(_tabela_resumo(res, 65.0))
+    texto = buf.export_text()
+    assert "Edições · Datas" in texto and "17/11 Noite, 18/11" in texto and "unificado" in texto
+    assert "Tamanho" in texto and "15,0 KB" in texto and "14 notícia(s)" in texto
+
+
+
 
 
 

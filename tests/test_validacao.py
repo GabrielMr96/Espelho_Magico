@@ -679,3 +679,54 @@ def test_completa_imparcial_voz_remove_ovicio_form_e_higieniza_risos_moeda():
         assert len(bloco.group(1)) < 5000
 
 
+def test_cobertura_pautas_detecta_e_recupera_noticia_sem_numeros_omitida():
+    from espelho_magico.validacao import AVISO, checar_cobertura_pautas, checar_integridade
+
+    entrada = (
+        "Os estivadores e operadores portuários de Roterdã entraram em greve por tempo indeterminado após o "
+        "impasse nas negociações salariais com as grandes armadoras europeias e suspenderam os embarques marítimos.\n\n"
+        "A agência espacial europeia divulgou novas imagens detalhadas das tempestades magnéticas no hemisfério "
+        "norte obtidas por satélites solares em órbita polar durante a madrugada.\n\n"
+        "Os bancos regionais ampliaram as linhas de crédito emergencial voltadas ao setor agrícola depois da "
+        "prolongada estiagem nas lavouras de café do sudeste mineiro.\n\n"
+        "O ministério da saúde anunciou a expansão nacional dos atendimentos remotos de telessaúde nas "
+        "unidades básicas para reduzir filas de especialidades médicas em municípios isolados."
+    )
+    md_incompleto = (
+        "# 18 de novembro de 2026\n\n"
+        "## Greve no porto de Roterdã\n\n"
+        "Os operadores portuários de Roterdã suspenderam embarques marítimos após impasse salarial.\n\n"
+        "## Enquete do Dia\n\nQual assunto mais chamou atenção?\n\n- Porto\n- Espaço\n- Agro\n- Saúde\n"
+    )
+
+    pct_p, verif, omitidas = checar_cobertura_pautas(entrada, md_incompleto)
+    assert len(verif) == 4 and len(omitidas) == 3 and pct_p == 25
+
+    st, det = checar_integridade(entrada, md_incompleto)
+    assert st == AVISO and "pautas cobertas" in det
+
+    def fake_reparar(conteudo, instrucao):
+        assert "<trechos_fonte>" in conteudo
+        assert "satélites solares" in conteudo
+        return (
+            "# 18 de novembro de 2026\n\n"
+            "## Greve no porto de Roterdã\n\n"
+            "Os operadores portuários de Roterdã suspenderam embarques marítimos após impasse salarial.\n\n"
+            "## Tempestades solares e agro\n\n"
+            "A agência espacial europeia captou imagens de tempestades magnéticas com satélites solares em órbita polar.\n\n"
+            "### Crédito agrícola para o café\n\n"
+            "Bancos regionais ampliaram crédito ao setor agrícola após estiagem nas lavouras de café mineiro.\n\n"
+            "## Telessaúde nos municípios\n\n"
+            "O ministério da saúde anunciou expansão nacional de telessaúde nas unidades básicas.\n\n"
+            "## Enquete do Dia\n\nQual assunto mais chamou atenção?\n\n- Porto\n- Espaço\n- Agro\n- Saúde\n"
+        )
+
+    final, rel = aplicar_dupla_verificacao(md_incompleto, entrada=entrada, idioma="pt", reparar=fake_reparar)
+    assert _status(rel, "Integridade (números)") == CORRIGIDO
+    assert "telessaúde" in final.lower()
+    # Seções concatenadas (tempestades + café sob o mesmo ##) continuam 100% cobertas sem falso positivo
+    pct_final, _, omitidas_final = checar_cobertura_pautas(entrada, final)
+    assert pct_final == 100 and not omitidas_final
+
+
+

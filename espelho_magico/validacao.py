@@ -811,15 +811,178 @@ def _analisar_integridade(entrada, saida):
     return pct, presentes, faltantes, proporcao, entrada_limpa
 
 
+_TRANS_ACENTOS = str.maketrans("áàâãäéèêëíìîïóòôõöúùûüçñ", "aaaaaeeeeiiiiooooouuuucn")
+
+_STOPWORDS_PAUTA = {
+    "para", "pela", "pelo", "pelos", "pelas", "como", "mais", "menos", "sobre", "entre",
+    "apos", "antes", "durante", "desde", "contra", "ainda", "tambem", "muito", "muita",
+    "muitos", "muitas", "todo", "toda", "todos", "todas", "esse", "essa", "esses", "essas",
+    "este", "esta", "estes", "estas", "isso", "isto", "aquilo", "mesmo", "mesma", "outros",
+    "outras", "outro", "outra", "pode", "podem", "podera", "deve", "devem", "deveria",
+    "serao", "foram", "havia", "tinha", "tinham", "tenha", "tenham", "seja", "sejam",
+    "sendo", "sido", "fazer", "feito", "feita", "disse", "afirmou", "segundo", "acordo",
+    "apenas", "onde", "quando", "enquanto", "porque", "pois", "entao", "porem", "contudo",
+    "todavia", "assim", "alem", "aqui", "hoje", "ontem", "amanha", "semana", "anos", "dias",
+    "hora", "horas", "with", "that", "this", "these", "those", "from", "into", "onto",
+    "about", "after", "before", "during", "since", "against", "also", "very", "more",
+    "most", "some", "many", "much", "other", "another", "such", "only", "just", "than",
+    "then", "when", "where", "while", "because", "though", "although", "however",
+    "therefore", "thus", "could", "would", "should", "will", "shall", "might", "must",
+    "have", "had", "been", "being", "were", "they", "them", "their", "there", "here",
+    "what", "which", "whom", "whose", "said", "says", "according", "today", "yesterday",
+    "tomorrow", "week", "month", "year", "years", "days", "hour", "hours",
+}
+
+_EQUIVALENTES_ENTIDADE = {
+    "ai": "ia", "ia": "ai",
+    "usa": "eua", "eua": "usa",
+    "gdp": "pib", "pib": "gdp",
+    "un": "onu", "onu": "un",
+    "who": "oms", "oms": "who",
+    "eu": "ue", "ue": "eu",
+}
+
+_RE_BOILERPLATE_PAUTA = re.compile(
+    r"(?:\bunsubscribe\b|manage\s+preferences|read\s+online|view\s+in\s+browser|forwarded\s+this|"
+    r"\bsponsored\s+by\b|\bbrought\s+to\s+you\s+by\b|\btogether\s+with\b|\boferecimento\b|"
+    r"\bapresentado\s+por\b|\bpatrocinado\b|\bparceiro\s+comercial\b|compartilhe\s+com|"
+    r"indique\s+(?:para|o\s+the\s+news)|what\s+did\s+you\s+think|o\s+que\s+achou|"
+    r"enquete\s+do\s+dia|daily\s+poll|responda\s+(?:a|à)\s+enquete|click\s+here|clique\s+aqui|"
+    r"tempo\s+de\s+leitura|\bmin\s+read\b|m[íi]dia\s+kit|media\s+kit)",
+    re.I,
+)
+
+
+def _sem_acento(texto):
+    return (texto or "").lower().translate(_TRANS_ACENTOS)
+
+
+def _limpar_md_pauta(texto):
+    texto = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", texto or "")
+    texto = re.sub(r"[*_`#>]+", " ", texto)
+    return re.sub(r"\s+", " ", texto).strip()
+
+
+def _detectar_idioma_texto(texto):
+    tokens = re.findall(r"\b[a-záéíóúâêôãõç]{2,}\b", (texto or "").lower())
+    pt = sum(1 for t in tokens if t in {"que", "para", "com", "uma", "dos", "das", "não", "por", "em", "como"})
+    en = sum(1 for t in tokens if t in {"the", "and", "that", "with", "for", "from", "was", "were", "are", "this"})
+    return "en" if en > pt * 1.25 else "pt"
+
+
+def _ancoras_pauta(texto):
+    """Extrai (stems_conteudo, entidades_ou_numeros) normalizados para comparar cobertura de pautas."""
+    limpo = _limpar_md_pauta(texto)
+    stems = set()
+    for bruto in re.findall(r"[a-zA-ZÀ-ÿ]{4,}", limpo):
+        norm = _sem_acento(bruto)
+        if norm in _STOPWORDS_PAUTA:
+            continue
+        stems.add(norm[:5] if len(norm) >= 6 else norm)
+
+    entidades = set(_numeros(limpo))
+    # Nomes próprios / siglas preservados mesmo quando há tradução (ex.: Nvidia, Trump, NASA, IA/AI)
+    ignorar_siglas = {"the", "and", "for", "not", "but", "you", "your", "com", "uma", "por", "dos", "das"}
+    for m in re.finditer(r"(?:(?<!^)(?<!\. )\b[A-ZÁÉÍÓÚÂÊÔÃÕÇ][a-zA-ZÀ-ÿ]{2,}|\b[A-Z]{2,6}\b)", limpo):
+        norm = _sem_acento(m.group(0))
+        if norm in _STOPWORDS_PAUTA or norm in ignorar_siglas:
+            continue
+        entidades.add(norm[:5] if len(norm) >= 6 else norm)
+        if norm in _EQUIVALENTES_ENTIDADE:
+            entidades.add(_EQUIVALENTES_ENTIDADE[norm])
+    return stems, entidades
+
+
+def _resumo_pauta(texto):
+    limpo = _limpar_md_pauta(texto)
+    palavras = limpo.split()
+    trecho = " ".join(palavras[:8])
+    return (trecho[:55] + "...") if len(trecho) > 55 else trecho
+
+
+def _pautas_editoriais_fonte(entrada_limpa):
+    """Extrai blocos editoriais substanciais da entrada limpa (excluindo CTAs, rodapés e teasers curtos)."""
+    pautas = []
+    for bloco in re.split(r"\n{2,}", entrada_limpa or ""):
+        linhas = [l.strip() for l in bloco.splitlines() if l.strip()]
+        candidatos = (
+            linhas
+            if sum(1 for l in linhas if re.match(r"^[-*•→]\s+", l)) >= 2
+            else [bloco.strip()]
+        )
+        for item in candidatos:
+            limpo = _limpar_md_pauta(item)
+            if len(limpo) < 120 or len(limpo.split()) < 18 or _RE_BOILERPLATE_PAUTA.search(limpo):
+                continue
+            stems, entidades = _ancoras_pauta(limpo)
+            if len(stems) < 5:
+                continue
+            # Evita contar o mesmo parágrafo repetido na própria fonte (ex.: resumo + matéria quase literal)
+            if any(len(stems & p["stems"]) >= len(stems) * 0.85 for p in pautas):
+                continue
+            pautas.append({"texto": item, "stems": stems, "entidades": entidades})
+    return pautas
+
+
+def checar_cobertura_pautas(entrada, saida):
+    """Verifica se blocos editoriais da fonte foram preservados no Markdown (isolados ou concatenados).
+
+    Retorna `(pct_pautas, verificaveis, omitidas)`.
+    """
+    entrada_limpa = _filtrar_para_integridade(entrada, eh_entrada=True)
+    saida_limpa = _filtrar_para_integridade(saida, eh_entrada=False)
+    pautas = _pautas_editoriais_fonte(entrada_limpa)
+    if not pautas:
+        return 100, [], []
+
+    mesmo_idioma = _detectar_idioma_texto(entrada_limpa) == _detectar_idioma_texto(saida_limpa)
+    verificaveis = pautas if mesmo_idioma else [p for p in pautas if len(p["entidades"]) >= 2]
+    if len(verificaveis) < 3:
+        return 100, [], []
+
+    stems_out, ents_out = _ancoras_pauta(saida_limpa)
+    limpo_out = _sem_acento(_limpar_md_pauta(saida_limpa))
+    omitidas = []
+    for p in verificaveis:
+        hits_stems = len(p["stems"] & stems_out)
+        hits_ents = sum(1 for e in p["entidades"] if e in ents_out or (len(e) >= 4 and e in limpo_out))
+        coberta = (
+            (hits_stems >= 3 or hits_ents >= 2 or (hits_stems >= 2 and hits_ents >= 1))
+            if mesmo_idioma
+            else (hits_ents >= 1 or hits_stems >= 2)
+        )
+        if not coberta:
+            omitidas.append(p)
+
+    pct = (len(verificaveis) - len(omitidas)) * 100 // len(verificaveis)
+    return pct, verificaveis, omitidas
+
+
 def checar_integridade(entrada, saida):
-    """(status, detalhe): % de números editoriais da fonte preservados no Markdown e proporção."""
-    pct, presentes, faltantes, proporcao, entrada_limpa = _analisar_integridade(entrada, saida)
+    """(status, detalhe): % de números e cobertura de pautas editoriais preservados no Markdown."""
+    pct, presentes, faltantes, proporcao, _ = _analisar_integridade(entrada, saida)
+    pct_pautas, pautas_verif, pautas_omitidas = checar_cobertura_pautas(entrada, saida)
     total_in = len(presentes) + len(faltantes)
+    alerta_pauta = len(pautas_verif) >= 3 and pct_pautas < 80 and len(pautas_omitidas) >= 2
+
+    sufixo_pauta = ""
+    if len(pautas_verif) >= 3:
+        cobertas = len(pautas_verif) - len(pautas_omitidas)
+        sufixo_pauta = f" · pautas cobertas: {cobertas}/{len(pautas_verif)} ({pct_pautas}%)"
+        if alerta_pauta:
+            amostra_p = _amostra([_resumo_pauta(p["texto"]) for p in pautas_omitidas], 2)
+            sufixo_pauta += f" — possível omissão: {amostra_p}"
+
     if total_in < 5:
-        return OK, f"poucos números na fonte para comparar · saída com {proporcao}% do tamanho da entrada limpa"
-    detalhe = f"{pct}% dos números da fonte preservados ({len(presentes)}/{total_in}) · saída com {proporcao}% do tamanho"
-    if pct >= 80:
+        if alerta_pauta:
+            return AVISO, f"poucos números na fonte · saída com {proporcao}% do tamanho{sufixo_pauta}"
+        return OK, f"poucos números na fonte para comparar · saída com {proporcao}% do tamanho da entrada limpa{sufixo_pauta}"
+
+    detalhe = f"{pct}% dos números da fonte preservados ({len(presentes)}/{total_in}) · saída com {proporcao}% do tamanho{sufixo_pauta}"
+    if pct >= 80 and not alerta_pauta:
         return OK, detalhe
+    if alerta_pauta and pct >= 80:
+        return AVISO, detalhe
     sufixo = f" · ausentes ex.: {', '.join(list(faltantes.values())[:4])}" if faltantes else ""
     if pct >= 60:
         return AVISO, detalhe + " (pode ser publicidade removida)" + sufixo
@@ -1169,17 +1332,28 @@ def _norm_titulo(titulo):
     return re.sub(r"\W+", " ", (titulo or "").lower()).strip()
 
 
-def _trechos_para_integridade(entrada_limpa, faltantes, limite=7500):
-    """Seleciona da entrada apenas seções/blocos que contêm os números ausentes."""
+def _trechos_para_integridade(entrada_limpa, faltantes, limite=7500, pautas_omitidas=None):
+    """Seleciona da entrada seções/blocos com números ausentes ou pautas editoriais omitidas."""
     chaves = set(faltantes)
     blocos = [b.strip() for b in re.split(r"\n{2,}", entrada_limpa) if b.strip()]
-    escolhidos, tamanho = [], 0
-    for bloco in blocos:
-        if any(n in chaves for n in _numeros(bloco)):
+    escolhidos, vistos, tamanho = [], set(), 0
+
+    for bloco in ([p["texto"].strip() for p in (pautas_omitidas or []) if p.get("texto")]):
+        if bloco not in vistos:
             if tamanho + len(bloco) > limite and escolhidos:
                 break
+            vistos.add(bloco)
             escolhidos.append(bloco)
             tamanho += len(bloco) + 2
+
+    if chaves:
+        for bloco in blocos:
+            if bloco not in vistos and any(n in chaves for n in _numeros(bloco)):
+                if tamanho + len(bloco) > limite and escolhidos:
+                    break
+                vistos.add(bloco)
+                escolhidos.append(bloco)
+                tamanho += len(bloco) + 2
     return "\n\n".join(escolhidos)
 
 
@@ -1213,7 +1387,9 @@ def _mesclar_secoes_recuperadas(md, recuperado, full_doc):
     return juntar_secoes(pre_orig, corpos + finais)
 
 
-def _resumir_recuperacao_integridade(md_antes, md_depois, entrada, pct_antes, faltantes_antes):
+def _resumir_recuperacao_integridade(
+    md_antes, md_depois, entrada, pct_antes, faltantes_antes, pct_pautas_antes=100, pct_pautas_depois=100
+):
     pct_depois, presentes_depois, faltantes_depois, _, _ = _analisar_integridade(entrada, md_depois)
     total_in = len(presentes_depois) + len(faltantes_depois)
     nums_recuperados = [bruto for norm, bruto in faltantes_antes.items() if norm not in faltantes_depois]
@@ -1232,44 +1408,58 @@ def _resumir_recuperacao_integridade(md_antes, md_depois, entrada, pct_antes, fa
         if (set(_numeros(txt_d)) - set(_numeros(txt_a))) or len(txt_d) > len(txt_a) + 20:
             completadas.append(s_dep["titulo"])
 
-    partes = [f"preservação subiu de {pct_antes}% para {pct_depois}% ({len(presentes_depois)}/{total_in})"]
+    partes = []
+    if pct_depois > pct_antes or faltantes_antes:
+        partes.append(f"preservação subiu de {pct_antes}% para {pct_depois}% ({len(presentes_depois)}/{total_in})")
+    if pct_pautas_depois > pct_pautas_antes:
+        partes.append(f"cobertura de pautas subiu de {pct_pautas_antes}% para {pct_pautas_depois}%")
     if nums_recuperados:
         partes.append(f"+{len(nums_recuperados)} número(s) restaurado(s) ({_amostra(nums_recuperados, 6, aspas=False)})")
     if novas_secoes:
         partes.append(f"seção(ões) adicionada(s): {_amostra(novas_secoes, 2)}")
     if completadas:
         partes.append(f"completada(s): {_amostra(completadas, 2)}")
-    return " · ".join(partes), faltantes_depois
+    return " · ".join(partes) or f"preservação em {pct_depois}%", faltantes_depois
 
 
 def _reparar_integridade_com_ia(md, entrada, idioma, reparar):
-    """Tenta recuperar com IA notícias/números omitidos da fonte e detalha o que foi restaurado."""
+    """Tenta recuperar com IA notícias/pautas e números omitidos da fonte e detalha o que foi restaurado."""
     pct_antes, _, faltantes, _, entrada_limpa = _analisar_integridade(entrada, md)
-    trechos = _trechos_para_integridade(entrada_limpa, faltantes)
+    pct_pautas_antes, pautas_verif, pautas_omitidas = checar_cobertura_pautas(entrada, md)
+    pautas_relevantes = (
+        pautas_omitidas if (len(pautas_verif) >= 3 and pct_pautas_antes < 80 and len(pautas_omitidas) >= 2) else []
+    )
+    trechos = _trechos_para_integridade(entrada_limpa, faltantes, pautas_omitidas=pautas_relevantes)
     if not trechos:
         return md, pct_antes, pct_antes, False, "", faltantes
 
     lista_ausentes = ", ".join(list(faltantes.values())[:10])
+    alvo_msg = (
+        f"dados/números e/ou pautas da fonte original (ausentes: {lista_ausentes})"
+        if lista_ausentes
+        else f"{len(pautas_relevantes)} pauta(s) editorial(is) da fonte original possivelmente omitida(s)"
+    )
     full_doc = len(md) <= 8500
     if full_doc:
         instrucao = (
-            "A dupla verificação detectou possível omissão de dados/números da fonte original "
-            f"(ausentes: {lista_ausentes}). Compare o RASCUNHO ATUAL com os TRECHOS DA FONTE e devolva o "
-            "Markdown COMPLETO restaurando apenas os fatos e números editoriais faltantes, mantendo o formato limpo "
-            "de roteiro (título #, seções ##, tópicos em vez de tabelas, sem URLs e preservando Enquete do Dia/Daily Poll ao final). "
-            "NUNCA restaure anúncios, patrocínios, taxas promocionais de marcas (ex.: ARQ, investback), sorteios de iPhone, "
-            "planos de assinatura (ex.: Peak Premium), promoções/guia de compras (ex.: Black Friday), mídia kit ou endereços postais."
+            f"A dupla verificação detectou possível omissão de {alvo_msg}. Compare o RASCUNHO ATUAL com os "
+            "TRECHOS DA FONTE e devolva o Markdown COMPLETO restaurando apenas os fatos, pautas e números editoriais "
+            "faltantes (concatenando em seções existentes se tratarem do mesmo assunto, ou criando nova seção ##), "
+            "mantendo o formato limpo de roteiro (título #, seções ##, tópicos em vez de tabelas, sem URLs e preservando "
+            "Enquete do Dia/Daily Poll ao final). NUNCA restaure anúncios, patrocínios, taxas promocionais de marcas "
+            "(ex.: ARQ, investback), sorteios de iPhone, planos de assinatura (ex.: Peak Premium), promoções/guia de "
+            "compras (ex.: Black Friday), mídia kit ou endereços postais."
         )
         conteudo = f"<rascunho_atual>\n{md}\n</rascunho_atual>\n\n<trechos_fonte>\n{trechos}\n</trechos_fonte>"
     else:
         titulos_atuais = "\n".join(f"- {s['titulo']}" for s in dividir_secoes(md)[1] if _eh_secao_noticia(s))
         instrucao = (
-            "A dupla verificação detectou possível omissão de dados/números da fonte original "
-            f"(ausentes: {lista_ausentes}). Com base nos TRECHOS DA FONTE, escreva SOMENTE as seções ## completas "
-            "que contêm esses números editoriais omitidos (mantendo o mesmo título ## exato se já existir na pauta para "
-            "completá-la, ou criando a seção ## omitida), em formato limpo para podcast (sem URLs nem tabelas). "
-            "NUNCA restaure anúncios, patrocínios, taxas promocionais de marcas (ex.: ARQ, investback), sorteios de iPhone, "
-            "planos de assinatura (ex.: Peak Premium), promoções/guia de compras (ex.: Black Friday), mídia kit ou endereços postais."
+            f"A dupla verificação detectou possível omissão de {alvo_msg}. Com base nos TRECHOS DA FONTE, escreva SOMENTE "
+            "as seções ## completas que contêm os fatos/números/pautas editoriais omitidos (mantendo o mesmo título ## exato "
+            "se já existir na pauta para completá-la, ou criando a seção ## omitida), em formato limpo para podcast (sem URLs "
+            "nem tabelas). NUNCA restaure anúncios, patrocínios, taxas promocionais de marcas (ex.: ARQ, investback), sorteios "
+            "de iPhone, planos de assinatura (ex.: Peak Premium), promoções/guia de compras (ex.: Black Friday), mídia kit ou "
+            "endereços postais."
         )
         conteudo = (
             f"<titulos_ja_extraidos>\n{titulos_atuais}\n</titulos_ja_extraidos>\n\n"
@@ -1290,10 +1480,21 @@ def _reparar_integridade_com_ia(md, entrada, idioma, reparar):
         return md, pct_antes, pct_antes, False, "", faltantes
 
     pct_depois, _, _, _, _ = _analisar_integridade(entrada, cand)
-    if pct_depois <= pct_antes:
+    pct_pautas_depois, _, _ = checar_cobertura_pautas(entrada, cand)
+    melhorou_num = pct_depois > pct_antes
+    melhorou_pauta = pct_pautas_depois > pct_pautas_antes and pct_depois >= pct_antes
+    if not (melhorou_num or melhorou_pauta):
         return md, pct_antes, pct_antes, False, "", faltantes
 
-    det_rec, faltantes_depois = _resumir_recuperacao_integridade(md, cand, entrada, pct_antes, faltantes)
+    det_rec, faltantes_depois = _resumir_recuperacao_integridade(
+        md,
+        cand,
+        entrada,
+        pct_antes,
+        faltantes,
+        pct_pautas_antes=pct_pautas_antes,
+        pct_pautas_depois=pct_pautas_depois,
+    )
     return cand, pct_antes, pct_depois, True, det_rec, faltantes_depois
 
 
@@ -1463,21 +1664,31 @@ def aplicar_dupla_verificacao(md, entrada="", idioma="pt", gerar=None, extrair_d
     else:
         registrar(nome_regra_idioma, OK, det_idioma)
 
-    # 7. Integridade (filtra falsos positivos de timestamps/metadados; recupera com IA se ainda faltar)
+    # 7. Integridade (filtra falsos positivos de timestamps/metadados; checa números e cobertura de pautas)
     if entrada:
         status_int, det_int = checar_integridade(entrada, md)
         if status_int == AVISO and reparar:
             pct_antes, presentes_antes, faltantes_antes, _, _ = _analisar_integridade(entrada, md)
+            pct_pautas_antes, pautas_verif, pautas_omitidas = checar_cobertura_pautas(entrada, md)
             total_in = len(presentes_antes) + len(faltantes_antes)
-            enc_int = (
-                f"{pct_antes}% dos números da fonte ({len(presentes_antes)}/{total_in}) — "
-                f"{len(faltantes_antes)} ausente(s) ({_amostra(faltantes_antes.values(), 6, aspas=False)})"
-            )
+            if faltantes_antes and pct_antes < 80:
+                enc_int = (
+                    f"{pct_antes}% dos números da fonte ({len(presentes_antes)}/{total_in}) — "
+                    f"{len(faltantes_antes)} ausente(s) ({_amostra(faltantes_antes.values(), 6, aspas=False)})"
+                )
+                etapa_msg = f"🔧 restaurando números omitidos ({pct_antes}%)"
+            else:
+                cobertas = len(pautas_verif) - len(pautas_omitidas)
+                enc_int = (
+                    f"cobertura de pautas em {pct_pautas_antes}% ({cobertas}/{len(pautas_verif)}) — "
+                    f"{len(pautas_omitidas)} pauta(s) ausente(s)"
+                )
+                etapa_msg = f"🔧 restaurando pautas omitidas ({pct_pautas_antes}%)"
             _emitir(
                 notificar, "ia_inicio", "Integridade (números)",
                 encontrado=enc_int,
-                acao="restaurando trechos e números omitidos com IA...",
-                etapa=f"🔧 restaurando números omitidos ({pct_antes}%)",
+                acao="restaurando trechos, pautas e números omitidos com IA...",
+                etapa=etapa_msg,
             )
             md_rec, _, _, melhorou, det_rec, faltantes_depois = _reparar_integridade_com_ia(md, entrada, idioma, reparar)
             if melhorou:

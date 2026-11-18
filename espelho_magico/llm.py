@@ -1,4 +1,5 @@
 """Extração via IA: Gemini (rotação de chaves + fallback de modelos), provedor alternativo e Perplexity."""
+import json
 import random
 import re
 import threading
@@ -488,8 +489,34 @@ class ProvedorAlternativo:
             truncado = escolha.get("finish_reason") == "length"
         return texto, truncado
 
+    @staticmethod
+    def _resumo_erro_http(status_code, detalhe):
+        """Extrai resumo legível de erro HTTP (sem despejar JSON cru no terminal)."""
+        msg = (detalhe or "").strip()
+        try:
+            dados = json.loads(msg)
+            err = dados.get("error") if isinstance(dados, dict) else None
+            if isinstance(err, dict) and err.get("message"):
+                msg = str(err["message"])
+            elif isinstance(err, str):
+                msg = err
+        except Exception:
+            pass
+        low = msg.lower()
+        if status_code == 429:
+            if "tokens per minute" in low or "tpm" in low or "rate limit" in low:
+                return "429 limite de tokens/minuto (TPM)"
+            return "429 limite de requisições"
+        if status_code == 413 or any(t in low for t in ("request too large", "reduce your message size", "context_length")):
+            return f"{status_code} payload acima do limite de TPM"
+        if status_code in (500, 502, 503, 504, 529):
+            return f"{status_code} serviço temporariamente indisponível"
+        msg = " ".join(msg.split())
+        return f"{status_code}: {msg[:110]}" if msg else f"HTTP {status_code}"
+
     def gerar(self, conteudo, prompt):
         ultimo_erro = "n/d"
+        eh_tpm = False
         for tentativa in range(self.tentativas):
             url, corpo, cabecalhos = self._requisicao(conteudo, prompt)
             logger.info(f"[cyan]➜ Processando com {self.nome} (tentativa {tentativa + 1}/{self.tentativas})...[/cyan]")
@@ -518,24 +545,27 @@ class ProvedorAlternativo:
                     metades = dividir_em_duas_partes(conteudo)
                     if len(metades) == 2:
                         logger.warning(
-                            f"[yellow]  ⚠ {self.nome} recusou o tamanho da requisição ({resposta.status_code} / limite de TPM). "
-                            f"Dividindo entrada ({len(conteudo):,} chars) em 2 partes menores...[/yellow]"
+                            f"[yellow]  ⚠ {self.nome}: {resposta.status_code} acima do limite de TPM — "
+                            f"dividindo entrada ({len(conteudo):,} chars) em 2 partes menores...[/yellow]"
                         )
                         r1 = self.gerar(metades[0], prompt)
                         self._sleep(15)
                         r2 = self.gerar(metades[1], prompt)
                         return unir_partes_extraidas([r1, r2])
+                resumo_erro = self._resumo_erro_http(resposta.status_code, detalhe)
                 if resposta.status_code not in (408, 409, 429, 500, 502, 503, 504, 529):
-                    raise FalhaExtracao(f"{self.nome} recusou a requisição ({resposta.status_code}): {detalhe}")
-                ultimo_erro = f"{resposta.status_code}: {detalhe}"
+                    raise FalhaExtracao(f"{self.nome} recusou a requisição ({resumo_erro})")
+                ultimo_erro = resumo_erro
+                eh_tpm = "tokens per minute" in detalhe_low or "tpm" in detalhe_low or "tpm" in resumo_erro.lower()
             if tentativa < self.tentativas - 1:
                 espera = min(10 * (2 ** tentativa), 90) + random.uniform(0, 3)
-                if "tokens per minute" in ultimo_erro.lower() or "tpm" in ultimo_erro.lower():
+                if eh_tpm:
                     espera = max(espera, 35)
-                logger.warning(f"[yellow]  ⚠ {self.nome} indisponível ({escape(ultimo_erro[:140])}). "
-                               f"Nova tentativa em {espera:.0f}s...[/yellow]")
+                logger.warning(
+                    f"[yellow]  ⚠ {self.nome}: {escape(ultimo_erro)} — nova tentativa em {espera:.0f}s...[/yellow]"
+                )
                 self._sleep(espera)
-        raise FalhaExtracao(f"{self.nome} falhou após {self.tentativas} tentativa(s): {ultimo_erro[:200]}")
+        raise FalhaExtracao(f"{self.nome} falhou após {self.tentativas} tentativa(s): {ultimo_erro}")
 
 
 class Extrator:
