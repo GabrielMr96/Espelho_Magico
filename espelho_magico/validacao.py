@@ -136,7 +136,8 @@ _RE_RUIDO_LINHA = re.compile(
     r"🤩\s*Baita\b[^.\n]*$|"
     r"(?:EDI[ÇC][ÃA]O\s*#\d+\b|Essa\s+news\s+foi\s+encaminhada|Conhe[çc]a\s+as\s+outras\s+news|"
     r"Elevando\s+o\s+QI\s+da\s+internet|Dropped\s+pelos\s+humanos|Se\s+amarra\s+em\s+Youtube|"
-    r"Rod\.\s+[^,\n]+,\s*\d+\b)|"
+    r"Rod\.\s+[^,\n]+,\s*\d+\b|"
+    r"(?:Resposta|Answer)\s*:\*{0,2}\s*(?:A\s+resposta\s+oficial\s+n[aã]o\s+consta|The\s+official\s+answer\s+is\s+not\s+included)\b[^\n]*)|"
     r"Quer\s+fazer\s+sua\s+marca\b.*\bAnuncie\b)|"
     r".*?(?:\b\d{5}-\d{3}\b(?:,\s*(?:Brazil|Brasil))?\s*$|"
     r"concorrer\s+a\s+(?:um|uma)\s+\*{0,2}iPhone\b|"
@@ -151,7 +152,11 @@ _RE_RUIDO_INLINE = re.compile(
     r"upgrade\s+to\s+(?:pro|premium)|go\s+premium|conte[uú]do\s+patrocinado|sponsored\s+content)\b|"
     r"Next\s+week,\s+a\s+(?:meditation|look|deep\s+dive|tour|preview)\s+on\b|"
     r"👉\s*(?:Veja|Confira|Acesse|Clique)\s+aqui\b)[^.!?\n]*[.!?\)]?|"
-    r"\bNesta\s+mat[eé]ria,\s+a\s+\*{0,2}My\s+Minerva\s+Foods\*{0,2}\s+explicou\s+que\s+)",
+    r"\bNesta\s+mat[eé]ria,\s+a\s+\*{0,2}My\s+Minerva\s+Foods\*{0,2}\s+explicou\s+que\s+|"
+    r",?\s*e\s+pela\s+primeira\s+vez\s+a\s+equipe\s+d[eo]\s+\*{0,2}O\s+V[ií]cio\*{0,2}\s+faz\s+parte\s+do\s+j[uú]ri\b|"
+    r"\s*Desta\s+vez,\s+o\s+(?:portal|site)\s+\*{0,2}O\s+V[ií]cio\*{0,2}\s+fez\s+parte\s+da\s+escolha[^.!?\n]*[.!?]|"
+    r"\s*Confira\s+a\s+lista\s+revelada\s+em\s+live\s*:?|"
+    r"\s*Por\s+favor,\s+liste\s+o\s+nome\s+espec[ií]fico\s+do\s+ator\s+ou\s+personagem,?\s+e\s+o\s+jogo\.?)",
     re.I,
 )
 _MESES_PT = (
@@ -471,8 +476,25 @@ def _adaptar_ouvintes(linhas, idioma):
             (r"\bnewsletters\b", "edições"),
             (r"\bnewsletter\b", "edição"),
         ]
+    _re_esq_dir = re.compile(
+        r"(\*{0,2}Esquerda\*{0,2}\s*:?\*{0,2}\s*(\d{1,3})\s*%\s*[|·/,]\s*\*{0,2}Direita\*{0,2}\s*:?\*{0,2}\s*(\d{1,3})\s*%"
+        r"|\*{0,2}Direita\*{0,2}\s*:?\*{0,2}\s*(\d{1,3})\s*%\s*[|·/,]\s*\*{0,2}Esquerda\*{0,2}\s*:?\*{0,2}\s*(\d{1,3})\s*%)",
+        re.I,
+    )
     novas = []
     for linha in linhas:
+        if idioma != "en" and "imparcial" not in linha.lower():
+            m_res = _re_esq_dir.search(linha)
+            if m_res:
+                p1 = int(m_res.group(2) or m_res.group(4))
+                p2 = int(m_res.group(3) or m_res.group(5))
+                if 0 < p1 + p2 < 100:
+                    imp_pct = 100 - (p1 + p2)
+                    ex = f"'{m_res.group(1)}' → 'Imparcial: {imp_pct}% | {m_res.group(1)}'"
+                    if ex not in exemplos:
+                        exemplos.append(ex)
+                    linha = linha[: m_res.start()] + f"Imparcial: {imp_pct}% | " + linha[m_res.start() :]
+                    trocas += 1
         for padrao, troca in pares:
             if re.search(padrao, linha):
                 for m in re.finditer(padrao, linha):

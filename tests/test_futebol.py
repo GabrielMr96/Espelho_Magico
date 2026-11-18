@@ -327,3 +327,51 @@ def test_ordem_prioridade_ligas_e_reagrupamento_brt(tmp_path, monkeypatch):
     assert md_brt.count("Santos 1 x 0 Grêmio") == 1
     assert ultima_ok == datetime.date(2026, 11, 15)
 
+
+def test_concacaf_nations_e_novas_selecoes_destaque():
+    dados = {"events": [
+        {
+            "links": [{"href": "https://www.espn.com/soccer/match/_/gameId/20/league/fifa.friendly"}],
+            "competitions": [{"altGameNote": "Men's International Friendly", "competitors": [
+                {"homeAway": "home", "score": "2", "team": {"shortDisplayName": "Japan", "name": "Japan"}},
+                {"homeAway": "away", "score": "1", "team": {"shortDisplayName": "Paraguay", "name": "Paraguay"}},
+            ]}],
+        },
+        {
+            "links": [{"href": "https://www.espn.com/soccer/match/_/gameId/21/league/fifa.friendly"}],
+            "competitions": [{"altGameNote": "Men's International Friendly", "competitors": [
+                {"homeAway": "home", "score": "3", "team": {"shortDisplayName": "Norway", "name": "Norway"}},
+                {"homeAway": "away", "score": "0", "team": {"shortDisplayName": "Kazakhstan", "name": "Kazakhstan"}},
+            ]}],
+        },
+        {
+            "links": [{"href": "https://www.espn.com/soccer/match/_/gameId/22/league/concacaf.nations.league"}],
+            "competitions": [{"altGameNote": "Quarterfinals", "competitors": [
+                {"homeAway": "home", "score": "4", "team": {"shortDisplayName": "USA", "name": "United States"}},
+                {"homeAway": "away", "score": "1", "team": {"shortDisplayName": "Jamaica", "name": "Jamaica"}},
+            ]}],
+        },
+        {
+            "links": [{"href": "https://www.espn.com/soccer/match/_/gameId/23/league/uefa.nations"}],
+            "competitions": [{"altGameNote": "League A", "competitors": [
+                {"homeAway": "home", "score": "2", "team": {"shortDisplayName": "Wales", "name": "Wales"}},
+                {"homeAway": "away", "score": "3", "team": {"shortDisplayName": "Portugal", "name": "Portugal"}},
+            ]}],
+        },
+        # Jogo sem seleção destaque continua barrado
+        {
+            "links": [{"href": "https://www.espn.com/soccer/match/_/gameId/24/league/concacaf.nations.league"}],
+            "competitions": [{"altGameNote": "Group Stage", "competitors": [
+                {"homeAway": "home", "score": "1", "team": {"shortDisplayName": "Belize", "name": "Belize"}},
+                {"homeAway": "away", "score": "0", "team": {"shortDisplayName": "Bonaire", "name": "Bonaire"}},
+            ]}],
+        },
+    ]}
+    md = futebol.formatar_resultados(dados, datetime.date(2026, 11, 17))
+    assert "### UEFA Nations League\n- Wales 2 x 3 Portugal" in md
+    assert "### CONCACAF Nations League\n- USA 4 x 1 Jamaica" in md
+    assert "- Japan 2 x 1 Paraguay" in md
+    assert "- Norway 3 x 0 Kazakhstan" in md
+    assert "Belize" not in md
+    assert md.index("### UEFA Nations League") < md.index("### CONCACAF Nations League") < md.index("### Men's International Friendly")
+

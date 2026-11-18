@@ -1,11 +1,19 @@
 import datetime
 import io
+import re
+from pathlib import Path
 
 from rich.console import Console
 from rich.text import Text
 
 from espelho_magico.llm import MIN_CHARS_PARA_DIVIDIR
-from espelho_magico.pipeline import ConfigGrupo, Opcoes, Pipeline, extrair_data_de_texto
+from espelho_magico.pipeline import (
+    ConfigGrupo,
+    Opcoes,
+    Pipeline,
+    extrair_data_de_texto,
+    sanitizar_markdown_final,
+)
 from espelho_magico.validacao import (
     AVISO,
     CORRIGIDO,
@@ -612,5 +620,54 @@ def test_integridade_ignora_espaco_inseparavel_endereco_e_dropped_by():
     assert _status(rel, "Ruído") == CORRIGIDO
     assert _status(rel, "Integridade") == OK
     assert not rel.tem_aviso
+
+
+def test_completa_imparcial_voz_remove_ovicio_form_e_higieniza_risos_moeda():
+    bruto = (
+        "# 18 de novembro de 2026\n\n"
+        "## Curiosidade\n\n"
+        "Qual ator ganha menos?\n\n"
+        "**Resposta:** A resposta oficial não consta nesta parte da edição.\n\n"
+        "## Motores V8\n\n"
+        "### Estagi, você tá falando grego\n\n"
+        "Ronco agressivo (e agradável aos nossos ouvidos. risos.).\n\n"
+        "## Frango e Meta\n\n"
+        "*Não é pegadinha, risos.* A Upside lançou hoje e a Meta pagou US$ US$ 25 bilhões.\n\n"
+        "O texto mostra como o modelo funciona.\n\n"
+        "## Gatos no Brasil\n\n"
+        "Pelo contrário, segundo o IBGE, 19,3% dos lares têm gatos, risos. E seguem felizes.\n\n"
+        "## The Game Awards\n\n"
+        "Os vencedores serão anunciados **no dia 10 de dezembro**, e pela primeira vez a equipe do **O Vício** faz parte do júri.\n\n"
+        "Chegou o dia de conhecer os indicados do **TGA 2026**. Desta vez, o portal O Vício fez parte da escolha dos indicados. Confira a lista revelada em live:\n\n"
+        "Premia um profissional por atuação de voz. Por favor, liste o nome específico do ator ou personagem, e o jogo.\n\n"
+        "## Voz dos Ouvintes\n\n"
+        "Resultado da enquete da edição de 17/11/26 (votada por 2.128 ouvintes): Esquerda: 5% | Direita: 5%.\n\n"
+        "## Enquete do Dia\n\nQual tema venceu?\n\n- Motores\n- Economia\n- IA\n- Games\n"
+    )
+    sanitizado = sanitizar_markdown_final(bruto)
+    assert "US$ US$" not in sanitizado and "US$ 25 bilhões" in sanitizado
+    assert "risos" not in sanitizado.lower()
+    assert "### Entenda o contexto" in sanitizado
+    assert "Estagi" not in sanitizado
+    assert "Pelo contrário" not in sanitizado and "Segundo o IBGE, 19,3%" in sanitizado
+    assert "O texto mostra como" not in sanitizado and "A análise mostra como" in sanitizado
+
+    final, rel = aplicar_dupla_verificacao(sanitizado, idioma="pt", extrair_data=extrair_data_de_texto)
+    assert "Imparcial: 90% | Esquerda: 5% | Direita: 5%." in final
+    assert "O Vício" not in final
+    assert "Confira a lista revelada em live" not in final
+    assert "Por favor, liste o nome específico" not in final
+    assert "não consta nesta parte da edição" not in final
+    assert "Premia um profissional por atuação de voz." in final
+    assert _status(rel, "Ruído") == CORRIGIDO
+    assert _status(rel, "Voz dos Ouvintes") == CORRIGIDO
+    assert not rel.tem_aviso
+
+    raiz = Path(__file__).resolve().parent.parent / "prompts_notebooklm"
+    for nome in ("podcast_pt_br_universal.md", "podcast_en_the_out_of_order_dispatch.md"):
+        conteudo = (raiz / nome).read_text(encoding="utf-8")
+        bloco = re.search(r"```text\s*(.*?)\s*```", conteudo, re.S)
+        assert bloco is not None
+        assert len(bloco.group(1)) < 5000
 
 

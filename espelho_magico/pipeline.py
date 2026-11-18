@@ -41,7 +41,9 @@ _INSTRUCAO_PARTE = (
     "Este conteúdo é a PARTE {i} de {n} de uma mesma edição, fatiada por tamanho para caber no limite da IA. "
     "Extraia normalmente TODAS as notícias desta parte seguindo as regras acima, mas NÃO invente "
     "`## Enquete do Dia` / `## Daily Poll`: inclua enquete apenas se ela existir de fato nesta parte da fonte "
-    "(a enquete final é garantida depois, na dupla verificação).\n"
+    "(a enquete final é garantida depois, na dupla verificação). "
+    "NUNCA escreva avisos meta como 'A resposta oficial não consta nesta parte da edição' em quizzes/curiosidades: "
+    "se o gabarito não estiver nesta parte, preencha `**Resposta:** ...` diretamente com a resposta factual.\n"
     "</modo_parte>"
 )
 
@@ -671,6 +673,12 @@ _RE_APROFUNDE = re.compile(
 _RE_TWITTER_LIXO = re.compile(r"(?:https?://t\.co/\S+|pic\.twitter\.com/\S+)")
 _RE_TITULO_PONTUADO = re.compile(r"^(#{1,6}\s+.*?)[.?!:]\s*$")
 _RE_CERCA_EXTERNA = re.compile(r"^\s*```(?:markdown|md)?\s*\n(.*?)\n\s*```\s*$", re.S | re.I)
+_RE_MOEDA_DUPLICADA = re.compile(r"(?<!\w)(US\$|R\$|€|£)\s+\1(?=\s|\d|$)")
+_RE_NAO_PEGADINHA_RISOS = re.compile(r"^\s*\*?N[aã]o\s+[eé]\s+pegadinha,?\s*risos\.?\*?[ \t]*", re.I | re.M)
+_RE_RISOS_CACOETE = re.compile(r"(?:\s*\(\s*risos\.?\s*\)|(?:,\s*|\.\s+)risos\.?(?=\s|[\)*_.,;!?]|$))", re.I)
+_RE_SUBTITULO_ESTAGI = re.compile(r"^(#{2,4}\s+)Estagi(?:\b[,!?:]?\s+.*)$", re.I | re.M)
+_RE_CONECTOR_ORFAO_SECAO = re.compile(r"(^#{2,3}\s+[^\n]+\n+)Pelo\s+contr[aá]rio,\s+([^\s])", re.M)
+_RE_TEXTO_MOSTRA = re.compile(r"\b(O|o)\s+texto\s+mostra\s+como\b")
 
 
 def _norm_paragrafo(texto):
@@ -863,6 +871,15 @@ def sanitizar_markdown_final(texto):
 
     texto = _RE_APROFUNDE.sub("", texto)
     texto = _RE_TWITTER_LIXO.sub("", texto)
+    texto = _RE_MOEDA_DUPLICADA.sub(r"\1", texto)
+    texto = _RE_NAO_PEGADINHA_RISOS.sub("", texto)
+    texto = _RE_RISOS_CACOETE.sub(lambda m: "" if m.group(0).lstrip().startswith("(") else ".", texto)
+    texto = _RE_SUBTITULO_ESTAGI.sub(r"\1Entenda o contexto", texto)
+    texto = _RE_CONECTOR_ORFAO_SECAO.sub(lambda m: m.group(1) + m.group(2).upper(), texto)
+    texto = _RE_TEXTO_MOSTRA.sub(
+        lambda m: ("A" if m.group(1) == "O" else "a") + " análise mostra como",
+        texto,
+    )
 
     linhas = texto.splitlines()
     linhas_processadas = []
