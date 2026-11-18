@@ -175,8 +175,11 @@ class AltFake:
         return self.resultado
 
 
-def test_extrator_cai_no_alternativo_quando_gemini_fora_do_ar():
+def test_extrator_cai_no_alternativo_quando_gemini_fora_do_ar(monkeypatch):
+    from espelho_magico import config
     from espelho_magico.llm import Extrator
+
+    monkeypatch.setattr(config, "FALLBACK_ALT", True)
 
     c = ClienteFake({"m1": _api_error(503)})
     g, _ = _gerenciador([c], ["m1"])

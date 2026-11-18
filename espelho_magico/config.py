@@ -82,18 +82,18 @@ ALT_MODELO = os.environ.get("ALT_MODELO", "").strip()
 ALT_BASE_URL = os.environ.get("ALT_BASE_URL", "").strip()  # vazio = URL oficial do provedor
 ALT_MAX_TOKENS = _env_int("ALT_MAX_TOKENS", 16000)
 ALT_TIMEOUT = _env_int("ALT_TIMEOUT", 600)
-# Se configurado, entra automaticamente quando o Gemini esgotar as rodadas
-FALLBACK_ALT = _env_bool("FALLBACK_ALT", True)
+# Se configurado e FALLBACK_ALT=true, entra automaticamente quando o Gemini esgotar as rodadas
+FALLBACK_ALT = _env_bool("FALLBACK_ALT", False)
 
-# Timeout por requisição ao Gemini (s). Evita ficar minutos pendurado esperando um 503.
-GEMINI_TIMEOUT = _env_int("GEMINI_TIMEOUT", 180)
+# Timeout por requisição ao Gemini (s). Evita ficar minutos pendurado esperando um 503/504.
+GEMINI_TIMEOUT = _env_int("GEMINI_TIMEOUT", 90)
 
 # Política de retentativas (pior caso fica na casa de minutos, não horas).
 # As rodadas param no que vier primeiro: MAX_RODADAS ou IA_TEMPO_MAX segundos por extração.
 MAX_RODADAS = _env_int("MAX_RODADAS", 8)
 BACKOFF_BASE = _env_int("BACKOFF_BASE", 20)
 BACKOFF_MAX = _env_int("BACKOFF_MAX", 300)
-IA_TEMPO_MAX = _env_int("IA_TEMPO_MAX", 600)
+IA_TEMPO_MAX = _env_int("IA_TEMPO_MAX", 900)
 
 # --- Execução ----------------------------------------------------------------
 HTML_PRECLEAN = _env_bool("HTML_PRECLEAN", True)
