@@ -394,11 +394,47 @@ def _texto_edicoes_da_data(pasta, titulo_base, data_alvo):
     return ""
 
 
+def _palavras_relevantes(texto):
+    """Extrai palavras únicas >= 5 letras (fora das stopwords) em minúsculas."""
+    brutos = re.findall(r"[a-záéíóúâêôãõçA-ZÁÉÍÓÚÂÊÔÃÕÇ]{5,}", texto or "")
+    unicos = []
+    for termo in brutos:
+        low = termo.lower()
+        if low not in _STOPWORDS_RESUMO and low not in unicos:
+            unicos.append(low)
+    return unicos
+
+
 def _post_ja_extraido_localmente(html_post, texto_local):
-    """Confere por palavras-chave da chamada ('Para hoje…' ou manchetes) se o post já está no `.md` local."""
+    """Confere por parágrafos editoriais do corpo (ou chamada 'Para hoje…' em HTMLs curtos) se o post já está no `.md`."""
     if not texto_local:
         return False
+    texto_low = texto_local.lower()
     soup = BeautifulSoup(html_post, "html.parser")
+
+    paragrafos_corpo = []
+    for p in soup.find_all("p"):
+        txt = p.get_text(" ", strip=True)
+        if len(txt) < 70:
+            continue
+        if re.search(r"^(?:Para hoje|the news\b|Tempo de leitura|Veja mais|👉|🔋)", txt, re.I):
+            continue
+        paragrafos_corpo.append(txt)
+
+    if len(paragrafos_corpo) >= 3:
+        blocos_locais = [b for b in re.split(r"\n{2,}", texto_low) if len(b.strip()) >= 40]
+        avaliados = 0
+        encontrados = 0
+        for p_txt in paragrafos_corpo[:10]:
+            palavras = _palavras_relevantes(p_txt)
+            if len(palavras) < 4:
+                continue
+            avaliados += 1
+            if any(sum(1 for w in palavras if w in bloco) / len(palavras) >= 0.65 for bloco in blocos_locais):
+                encontrados += 1
+        if avaliados:
+            return encontrados >= 2 and (encontrados / avaliados) >= 0.35
+
     para_hoje = next(
         (p.get_text(" ", strip=True) for p in soup.find_all(["p", "div"]) if "Para hoje" in p.get_text() and len(p.get_text()) < 500),
         "",
@@ -406,19 +442,14 @@ def _post_ja_extraido_localmente(html_post, texto_local):
     if para_hoje:
         miolo = re.sub(r"^.*?Para hoje[….:\s]+", "", para_hoje)
         miolo = re.sub(r"(?:Segunda|Terça|Quarta|Quinta|Sexta|Sábado|Domingo)[^;.]*$", "", miolo, flags=re.I)
-        brutos = re.findall(r"[a-záéíóúâêôãõçA-ZÁÉÍÓÚÂÊÔÃÕÇ]{5,}", miolo)
+        unicos = _palavras_relevantes(miolo)
     else:
         cabecalhos = [h.get_text(" ", strip=True) for h in soup.find_all(["h1", "h3", "h5"]) if len(h.get_text(strip=True)) > 15]
-        brutos = [w for h in cabecalhos[:5] for w in re.findall(r"[a-záéíóúâêôãõçA-ZÁÉÍÓÚÂÊÔÃÕÇ]{5,}", h)]
+        unicos = _palavras_relevantes(" ".join(cabecalhos[:5]))
 
-    unicos = []
-    for termo in brutos:
-        low = termo.lower()
-        if low not in _STOPWORDS_RESUMO and low not in unicos:
-            unicos.append(low)
     if not unicos:
         return False
-    hits = sum(1 for termo in unicos if termo in texto_local)
+    hits = sum(1 for termo in unicos if termo in texto_low)
     return (hits / len(unicos)) >= 0.6
 
 
@@ -667,7 +698,8 @@ _RE_LINHA_CREDITO_SOLTO = re.compile(
     re.I,
 )
 _RE_APROFUNDE = re.compile(
-    r"\s*(?:\((?:aprofund[ea]|leia mais|saiba mais)\)|\b(?:aprofund[ea]|leia mais|saiba mais)\b(?=\s*(?:[.!?]\s*)?(?:\n|$)))",
+    r"\s*(?:\([*_]{0,3}(?:aprofund[ea]|leia mais|saiba mais)[*_]{0,3}\)|"
+    r"\b(?:aprofund[ea]|leia mais|saiba mais)\b(?=\s*(?:[.!?]\s*)?(?:\n|$)))",
     re.I,
 )
 _RE_TWITTER_LIXO = re.compile(r"(?:https?://t\.co/\S+|pic\.twitter\.com/\S+)")
@@ -888,8 +920,13 @@ def sanitizar_markdown_final(texto):
     for linha in linhas:
         l_strip = linha.strip()
 
-        # Remove imagens ou linhas que sejam apenas créditos de fotógrafo/agência ou aspas decorativas soltas
-        if _RE_CREDITO_RESIDUAL.match(l_strip) or _RE_LINHA_CREDITO_SOLTO.match(l_strip) or re.match(r"^\*{0,2}[“\"”]\*{0,2}$", l_strip):
+        # Remove imagens ou linhas que sejam apenas créditos de fotógrafo/agência ou aspas/embeds vazios
+        if (
+            _RE_CREDITO_RESIDUAL.match(l_strip)
+            or _RE_LINHA_CREDITO_SOLTO.match(l_strip)
+            or re.match(r"^\*{0,2}[“\"”❝❞]\*{0,2}$", l_strip)
+            or re.match(r"^>\s*[—–\-]\s*\(@\)\s*$", l_strip)
+        ):
             continue
 
         # Cabeçalho H1 (#)

@@ -5,6 +5,7 @@ from espelho_magico.pipeline import (
     ConfigGrupo,
     Opcoes,
     Pipeline,
+    _post_ja_extraido_localmente,
     agrupar_emails,
     aplicar_cabecalho_edicao,
     buscar_edicoes_faltantes_na_web,
@@ -490,6 +491,39 @@ def test_pipeline_ignora_aviso_futebol_sem_jogos(tmp_path, monkeypatch):
     gerado = (tmp_path / "Gol Contra #203.md").read_text(encoding="utf-8")
     assert "Nenhum jogo" not in gerado
     assert "## Matéria esportiva principal" in gerado
+
+
+def test_beehiiv_night_nao_da_falso_positivo_por_palavras_genericas_espalhadas():
+    html_night = (
+        "<html><body>"
+        "<p>Para hoje… Senado adia votação do ajuste fiscal; Um ataque hacker contra mais de 170 marcas; O último jogo da seleção em 2026; e mais.</p>"
+        "<p>Milhões de caranguejos vermelhos começaram a migração anual na Ilha Christmas, território australiano no Oceano Índico.</p>"
+        "<p>O Senado adiou para amanhã a votação dos quatro destaques da Lei Kandir no pacote fiscal com impacto de até R$ 60 bilhões em 2027.</p>"
+        "<p>Os sites de Zoom, BBC, CNN e mais de 170 marcas exibiram códigos maliciosos após invasão na plataforma Optimizely.</p>"
+        "<p>Vini Jr. marcou três gols nos primeiros 20 minutos na goleada de 7 a 0 do Brasil sobre Singapura em amistoso internacional.</p>"
+        "</body></html>"
+    )
+    texto_matinal_sem_night = (
+        "# Boletim Fora de Ordem #322 — 17 de novembro de 2026\n\n"
+        "## Risco fiscal e pacote no Congresso\n\n"
+        "O ajuste econômico voltou ao debate no Senado antes do último trimestre com corte de gastos.\n\n"
+        "## Ciberataque global e seleção de chips\n\n"
+        "Um ataque cibernético atribuído a grupo hacker atingiu redes corporativas em resposta ao último relatório.\n\n"
+        "## Amistoso de futebol\n\n"
+        "A seleção europeia convocou atletas para a próxima janela.\n"
+    )
+    assert _post_ja_extraido_localmente(html_night, texto_matinal_sem_night) is False
+
+    texto_com_night = (
+        texto_matinal_sem_night
+        + "\n## Migração na Ilha Christmas\n\n"
+        + "Milhões de caranguejos vermelhos começaram a migração anual na Ilha Christmas no Oceano Índico.\n\n"
+        + "## Optimizely afetou mais de 170 marcas\n\n"
+        + "Os sites de Zoom, BBC e CNN exibiram códigos maliciosos por falha na plataforma Optimizely.\n\n"
+        + "## Goleada sobre Singapura\n\n"
+        + "Vini Jr. marcou três gols nos primeiros 20 minutos na vitória de 7 a 0 do Brasil sobre Singapura.\n"
+    )
+    assert _post_ja_extraido_localmente(html_night, texto_com_night) is True
 
 
 

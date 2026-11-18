@@ -137,6 +137,7 @@ _RE_RUIDO_LINHA = re.compile(
     r"(?:EDI[ÇC][ÃA]O\s*#\d+\b|Essa\s+news\s+foi\s+encaminhada|Conhe[çc]a\s+as\s+outras\s+news|"
     r"Elevando\s+o\s+QI\s+da\s+internet|Dropped\s+pelos\s+humanos|Se\s+amarra\s+em\s+Youtube|"
     r"Rod\.\s+[^,\n]+,\s*\d+\b|"
+    r"🔋?\s*Veja\s+mais\s+nesta\s+entrevista\s+d[eo]\s+\*{0,2}the\s+news\*{0,2}\b[^\n]*|"
     r"(?:Resposta|Answer)\s*:\*{0,2}\s*(?:A\s+resposta\s+oficial\s+n[aã]o\s+consta|The\s+official\s+answer\s+is\s+not\s+included)\b[^\n]*)|"
     r"Quer\s+fazer\s+sua\s+marca\b.*\bAnuncie\b)|"
     r".*?(?:\b\d{5}-\d{3}\b(?:,\s*(?:Brazil|Brasil))?\s*$|"
@@ -156,6 +157,7 @@ _RE_RUIDO_INLINE = re.compile(
     r",?\s*e\s+pela\s+primeira\s+vez\s+a\s+equipe\s+d[eo]\s+\*{0,2}O\s+V[ií]cio\*{0,2}\s+faz\s+parte\s+do\s+j[uú]ri\b|"
     r"\s*Desta\s+vez,\s+o\s+(?:portal|site)\s+\*{0,2}O\s+V[ií]cio\*{0,2}\s+fez\s+parte\s+da\s+escolha[^.!?\n]*[.!?]|"
     r"\s*Confira\s+a\s+lista\s+revelada\s+em\s+live\s*:?|"
+    r"\s*Veja\s+a\s+carta\s+na\s+[ií]ntegra\s+aqui\.?|"
     r"\s*Por\s+favor,\s+liste\s+o\s+nome\s+espec[ií]fico\s+do\s+ator\s+ou\s+personagem,?\s+e\s+o\s+jogo\.?)",
     re.I,
 )
@@ -483,8 +485,15 @@ def _adaptar_ouvintes(linhas, idioma):
     )
     novas = []
     for linha in linhas:
-        if idioma != "en" and "imparcial" not in linha.lower():
-            m_res = _re_esq_dir.search(linha)
+        if idioma != "en" and not re.search(r"imparcial\*{0,2}\s*:?\*{0,2}\s*\d", linha, re.I):
+            sem_vazio = re.sub(
+                r"(?:\s*[|·/,]\s*)?\*{0,2}Imparcial\*{0,2}\s*:?\*{0,2}\s*\((?:n[aã]o\s+informado|n/?a)\)"
+                r"|\*{0,2}Imparcial\*{0,2}\s*:?\*{0,2}\s*\((?:n[aã]o\s+informado|n/?a)\)\s*[|·/,]\s*",
+                "",
+                linha,
+                flags=re.I,
+            )
+            m_res = _re_esq_dir.search(sem_vazio)
             if m_res:
                 p1 = int(m_res.group(2) or m_res.group(4))
                 p2 = int(m_res.group(3) or m_res.group(5))
@@ -493,7 +502,7 @@ def _adaptar_ouvintes(linhas, idioma):
                     ex = f"'{m_res.group(1)}' → 'Imparcial: {imp_pct}% | {m_res.group(1)}'"
                     if ex not in exemplos:
                         exemplos.append(ex)
-                    linha = linha[: m_res.start()] + f"Imparcial: {imp_pct}% | " + linha[m_res.start() :]
+                    linha = sem_vazio[: m_res.start()] + f"Imparcial: {imp_pct}% | " + sem_vazio[m_res.start() :]
                     trocas += 1
         for padrao, troca in pares:
             if re.search(padrao, linha):
@@ -740,7 +749,7 @@ def enquete_de_fallback(md, idioma="pt"):
 # --- Verificações e correção automática --------------------------------------
 
 _RE_BLOCO_PATROCINADO_FONTE = re.compile(
-    r"^#{1,5}[ \t]*(?:DROPPED[ \t]+BY|SPONSORED[ \t]+BY|CAMPANHA[ \t]+FOMO[ \t]+ZERO)\b.*?(?=\n#{5}[ \t]+\S|\Z)",
+    r"^#{1,5}[ \t]*(?:DROPPED[ \t]+BY|SPONSORED[ \t]+BY|CAMPANHA[ \t]+FOMO[ \t]+ZERO|COLLAB[ \t]+COM\b)\b.*?(?=\n#{5}[ \t]+\S|\Z)",
     re.S | re.I | re.M,
 )
 

@@ -180,10 +180,20 @@ def test_extrator_cai_no_alternativo_quando_gemini_fora_do_ar():
 
     c = ClienteFake({"m1": _api_error(503)})
     g, _ = _gerenciador([c], ["m1"])
-    g.extrair = lambda conteudo, prompt: (_ for _ in ()).throw(FalhaExtracao("503 em tudo"))
+    chamadas_gemini = 0
+
+    def falha_gemini(conteudo, prompt):
+        nonlocal chamadas_gemini
+        chamadas_gemini += 1
+        raise FalhaExtracao("503 em tudo")
+
+    g.extrair = falha_gemini
     alt = AltFake("texto do claude")
-    assert Extrator(gemini=g, alternativo=alt, ia_padrao="gemini").extrair("c", "p") == "texto do claude"
-    assert alt.chamadas == 1
+    ext = Extrator(gemini=g, alternativo=alt, ia_padrao="gemini")
+    assert ext.extrair("c1", "p") == "texto do claude"
+    assert ext.extrair("c2", "p") == "texto do claude"
+    assert chamadas_gemini == 1
+    assert alt.chamadas == 2
 
 
 def test_extrator_alt_como_principal_nao_chama_gemini():

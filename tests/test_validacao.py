@@ -630,10 +630,13 @@ def test_completa_imparcial_voz_remove_ovicio_form_e_higieniza_risos_moeda():
         "**Resposta:** A resposta oficial não consta nesta parte da edição.\n\n"
         "## Motores V8\n\n"
         "### Estagi, você tá falando grego\n\n"
-        "Ronco agressivo (e agradável aos nossos ouvidos. risos.).\n\n"
+        "Ronco agressivo (e agradável aos nossos ouvidos. risos.). Veja a carta na íntegra aqui.\n\n"
         "## Frango e Meta\n\n"
-        "*Não é pegadinha, risos.* A Upside lançou hoje e a Meta pagou US$ US$ 25 bilhões.\n\n"
+        "*Não é pegadinha, risos.* A Upside lançou hoje e a Meta pagou US$ US$ 25 bilhões. (***Aprofunde***)\n\n"
         "O texto mostra como o modelo funciona.\n\n"
+        "❝\n\n"
+        "> — (@)\n\n"
+        "🔋 Veja mais nesta entrevista do the news.\n\n"
         "## Gatos no Brasil\n\n"
         "Pelo contrário, segundo o IBGE, 19,3% dos lares têm gatos, risos. E seguem felizes.\n\n"
         "## The Game Awards\n\n"
@@ -641,11 +644,13 @@ def test_completa_imparcial_voz_remove_ovicio_form_e_higieniza_risos_moeda():
         "Chegou o dia de conhecer os indicados do **TGA 2026**. Desta vez, o portal O Vício fez parte da escolha dos indicados. Confira a lista revelada em live:\n\n"
         "Premia um profissional por atuação de voz. Por favor, liste o nome específico do ator ou personagem, e o jogo.\n\n"
         "## Voz dos Ouvintes\n\n"
-        "Resultado da enquete da edição de 17/11/26 (votada por 2.128 ouvintes): Esquerda: 5% | Direita: 5%.\n\n"
+        "Resultado da enquete da edição de 17/11/26 (votada por 2.128 ouvintes): **Esquerda:** 5% | **Direita:** 5% | **Imparcial:** (não informado)\n\n"
         "## Enquete do Dia\n\nQual tema venceu?\n\n- Motores\n- Economia\n- IA\n- Games\n"
     )
     sanitizado = sanitizar_markdown_final(bruto)
     assert "US$ US$" not in sanitizado and "US$ 25 bilhões" in sanitizado
+    assert "Aprofunde" not in sanitizado
+    assert "❝" not in sanitizado and "> — (@)" not in sanitizado
     assert "risos" not in sanitizado.lower()
     assert "### Entenda o contexto" in sanitizado
     assert "Estagi" not in sanitizado
@@ -653,7 +658,10 @@ def test_completa_imparcial_voz_remove_ovicio_form_e_higieniza_risos_moeda():
     assert "O texto mostra como" not in sanitizado and "A análise mostra como" in sanitizado
 
     final, rel = aplicar_dupla_verificacao(sanitizado, idioma="pt", extrair_data=extrair_data_de_texto)
-    assert "Imparcial: 90% | Esquerda: 5% | Direita: 5%." in final
+    assert "Imparcial: 90% | **Esquerda:** 5% | **Direita:** 5%" in final
+    assert "(não informado)" not in final
+    assert "Veja a carta na íntegra aqui" not in final
+    assert "Veja mais nesta entrevista do the news" not in final
     assert "O Vício" not in final
     assert "Confira a lista revelada em live" not in final
     assert "Por favor, liste o nome específico" not in final

@@ -499,9 +499,10 @@ class Extrator:
             config.GEMINI_API_KEYS, config.GEMINI_MODELS, config.GEMINI_MAX_OUTPUT_TOKENS,
             timeout=config.GEMINI_TIMEOUT,
         )
+        self._gemini_esgotado = False
 
     def extrair(self, conteudo, prompt):
-        if self.ia_padrao == "alt":
+        if self.ia_padrao == "alt" or (self._gemini_esgotado and self.alternativo):
             try:
                 return self.alternativo.gerar(conteudo, prompt)
             except FalhaExtracao as e:
@@ -518,7 +519,9 @@ class Extrator:
             if self.alternativo and config.FALLBACK_ALT and self.ia_padrao != "alt":
                 logger.warning(f"[yellow]⚠ {escape(str(falha))} Tentando {self.alternativo.nome}...[/yellow]")
                 try:
-                    return self.alternativo.gerar(conteudo, prompt)
+                    resposta = self.alternativo.gerar(conteudo, prompt)
+                    self._gemini_esgotado = True
+                    return resposta
                 except FalhaExtracao as e:
                     logger.warning(f"[yellow]⚠ {escape(str(e))}[/yellow]")
             if not (config.FALLBACK_PERPLEXITY and config.PERPLEXITY_API_KEY and self.ia_padrao != "perplexity"):
