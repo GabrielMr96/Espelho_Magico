@@ -128,8 +128,48 @@ def dividir_conteudo_com_metadados(conteudo, max_chars=14000):
     return saida
 
 
+_MESES_H1 = {
+    "janeiro": 1, "jan": 1, "january": 1,
+    "fevereiro": 2, "fev": 2, "feb": 2, "february": 2,
+    "março": 3, "marco": 3, "mar": 3, "march": 3,
+    "abril": 4, "abr": 4, "apr": 4, "april": 4,
+    "maio": 5, "mai": 5, "may": 5,
+    "junho": 6, "jun": 6, "june": 6,
+    "julho": 7, "jul": 7, "july": 7,
+    "agosto": 8, "ago": 8, "aug": 8, "august": 8,
+    "setembro": 9, "set": 9, "sep": 9, "sept": 9, "september": 9,
+    "outubro": 10, "out": 10, "oct": 10, "october": 10,
+    "novembro": 11, "nov": 11, "november": 11,
+    "dezembro": 12, "dez": 12, "dec": 12, "december": 12,
+}
+
+
+def _chave_data_h1(cabecalho):
+    m = re.search(
+        r"\b(\d{1,2})\s+de\s+(janeiro|fevereiro|março|marco|abril|maio|junho|"
+        r"julho|agosto|setembro|outubro|novembro|dezembro)\s+de\s+(20\d{2})\b",
+        cabecalho,
+        re.I,
+    )
+    if m:
+        return (int(m.group(3)), _MESES_H1[m.group(2).lower()], int(m.group(1)))
+    m = re.search(
+        r"\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|"
+        r"aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)"
+        r"\.?\s+(\d{1,2}),?\s+(20\d{2})\b",
+        cabecalho,
+        re.I,
+    )
+    if m:
+        return (int(m.group(3)), _MESES_H1[m.group(1).lower().rstrip(".")], int(m.group(2)))
+    m = re.search(r"\b(\d{1,2})[-/](\d{1,2})[-/](20\d{2})\b", cabecalho)
+    if m:
+        return (int(m.group(3)), int(m.group(2)), int(m.group(1)))
+    return (0, 0, 0)
+
+
 def unir_partes_extraidas(partes):
-    """Junta o Markdown extraído de múltiplas partes mantendo apenas um cabeçalho # Data no topo."""
+    """Junta o Markdown extraído mantendo a ordem das partes e usando o '# Data' mais recente no topo."""
     validas = []
     for p in partes:
         if not p or not p.strip():
@@ -145,12 +185,23 @@ def unir_partes_extraidas(partes):
     if not validas:
         return "[SEM_CONTEUDO_EDITORIAL]"
 
-    resultado = [validas[0]]
-    for parte in validas[1:]:
-        sem_h1 = re.sub(r"^\s*#\s+[^\n]+\n*", "", parte, count=1).strip()
-        if sem_h1:
-            resultado.append(sem_h1)
-    return "\n\n".join(resultado)
+    cabecalhos = []
+    corpos = []
+    for idx, parte in enumerate(validas):
+        m_h1 = re.match(r"^\s*(#\s+[^\n]+)\n*(.*)$", parte, flags=re.S)
+        if m_h1:
+            cab = m_h1.group(1).strip()
+            cabecalhos.append((idx, cab, _chave_data_h1(cab)))
+            corpo = m_h1.group(2).strip()
+            if corpo:
+                corpos.append(corpo)
+        else:
+            corpos.append(parte)
+
+    if cabecalhos:
+        _, h1_escolhido, _ = max(cabecalhos, key=lambda item: (item[2], -item[0]))
+        return "\n\n".join([h1_escolhido] + corpos) if corpos else h1_escolhido
+    return "\n\n".join(corpos)
 
 
 class GerenciadorGemini:

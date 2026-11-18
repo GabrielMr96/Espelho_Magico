@@ -526,6 +526,25 @@ def test_beehiiv_night_nao_da_falso_positivo_por_palavras_genericas_espalhadas()
     assert _post_ja_extraido_localmente(html_night, texto_com_night) is True
 
 
+def test_preparar_grupos_ordena_noite_anterior_antes_da_manha_hoje(tmp_path):
+    pipe = Pipeline(Opcoes(dry_run=True, unificar="sim"), extrator=None, drive_service=None, gmail_service=None)
+    emails = [
+        {"id": None, "assunto": "the news: 18/11/2026", "remetente": "the news", "data": "Wed, 18 Nov 2026 09:00:00 +0000", "conteudo_html": "<p>Manhã</p>"},
+        {"id": None, "assunto": "the news: NIGHT #352", "remetente": "the news", "data": "Tue, 17 Nov 2026 09:00:00 +0000", "conteudo_html": "<p>Noite</p>"},
+    ]
+    cfgs = pipe.preparar_grupos(emails)
+    assert len(cfgs) == 1
+    assert [e["assunto"] for e in cfgs[0].emails] == ["the news: NIGHT #352", "the news: 18/11/2026"]
+
+    # Também funciona para e-mails vindos direto do Gmail em ordem inversa (e mesmo UTC 01h de 18/11 = 22h BRT de 17/11)
+    emails_gmail = [
+        {"id": "m2", "assunto": "the news: quarta", "remetente": "thenews@x.com", "data": "Wed, 18 Nov 2026 06:00:00 -0300", "conteudo_html": "<p>Manhã</p>"},
+        {"id": "m1", "assunto": "the news 🌖 NIGHT #352", "remetente": "thenews@x.com", "data": "Wed, 18 Nov 2026 01:00:00 +0000", "conteudo_html": "<p>Noite</p>"},
+    ]
+    cfgs_gmail = pipe.preparar_grupos(emails_gmail)
+    assert [e["id"] for e in cfgs_gmail[0].emails] == ["m1", "m2"]
+
+
 
 
 

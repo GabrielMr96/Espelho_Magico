@@ -252,6 +252,15 @@ def test_dividir_conteudo_com_metadados_e_unir_partes():
     assert "# 8 de novembro de 2026" not in unido
     assert "## Notícia A" in unido and "## Notícia B" in unido and "## Notícia C" in unido
 
+    # Ordem cronológica crescente: noite de ontem primeiro, manhã de hoje depois -> H1 mantém a data mais recente
+    unido_crono = unir_partes_extraidas([
+        "# 17 de novembro de 2026\n\n## Notícia Noite\n\nCorpo noite.",
+        "# 18 de novembro de 2026\n\n## Notícia Manhã\n\nCorpo manhã.",
+    ])
+    assert unido_crono.startswith("# 18 de novembro de 2026\n")
+    assert "# 17 de novembro de 2026" not in unido_crono
+    assert unido_crono.index("## Notícia Noite") < unido_crono.index("## Notícia Manhã")
+
 
 def test_gemini_504_divide_entrada_longa_sem_downgrade_de_modelo():
     class ClienteSensivelTamanho:

@@ -839,10 +839,19 @@ def _corrigir_cabecalho(md, entrada="", idioma="pt", extrair_data=None):
     achados, ajustes = [], []
     md = md.strip()
 
-    def data_de(txt):
+    def maior_data_entrada(txt):
         if not extrair_data or not txt:
-            return ""
-        return _formatar_data(extrair_data(txt), idioma)
+            return None
+        blocos_meta = _RE_META_BLOCO.findall(txt)
+        if blocos_meta:
+            dts = [d for b in blocos_meta if (d := extrair_data(b)) is not None]
+            if dts:
+                return max(dts)
+        return extrair_data(txt)
+
+    def data_de(txt):
+        dt = maior_data_entrada(txt) if txt is entrada else (extrair_data(txt) if extrair_data and txt else None)
+        return _formatar_data(dt, idioma)
 
     linhas = md.split("\n")
     primeira = linhas[0].strip() if linhas else ""
@@ -866,6 +875,15 @@ def _corrigir_cabecalho(md, entrada="", idioma="pt", extrair_data=None):
                     linhas[0] = f"# {titulo_atual} — {dt_str}"
                 md = "\n".join(linhas)
                 ajustes.append(f"ajustado para '{linhas[0]}'")
+        elif extrair_data and entrada and _RE_META_BLOCO.search(entrada):
+            dt_maior = maior_data_entrada(entrada)
+            if dt_maior and dt_maior > data_ok:
+                dt_str = _formatar_data(dt_maior, idioma)
+                if dt_str:
+                    achados.append(f"cabeçalho com data anterior ('{primeira[:50]}')")
+                    linhas[0] = f"# {dt_str}"
+                    md = "\n".join(linhas)
+                    ajustes.append(f"atualizado para data mais recente '# {dt_str}'")
 
     linhas = md.split("\n")
     novas, h1_extras = [], []

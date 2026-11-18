@@ -251,6 +251,22 @@ def _inferir_data_de_url(url, html="", data_forcada=None):
     return email.utils.format_datetime(datetime.datetime.now(datetime.timezone.utc))
 
 
+def _chave_cronologica_email(e):
+    """Ordena e-mails do grupo em ordem cronológica crescente (noite anterior antes da manhã de hoje)."""
+    fuso_brt = datetime.timezone(datetime.timedelta(hours=-3))
+    try:
+        dt = email.utils.parsedate_to_datetime(e.get("data", ""))
+        dt = dt if dt.tzinfo else dt.replace(tzinfo=datetime.timezone.utc)
+        dt_brt = dt.astimezone(fuso_brt)
+    except Exception:
+        dt = datetime.datetime.max.replace(tzinfo=datetime.timezone.utc)
+        dt_brt = dt
+    ass = (e.get("assunto") or "").lower()
+    rem = (e.get("remetente") or "").lower()
+    eh_night = 1 if ("night" in ass or "night" in rem or "🌖" in ass) else 0
+    return (dt_brt.date(), eh_night, dt)
+
+
 def _inferir_prefixo_de_url(url, html, filtros_grupo, mapeamento):
     """Identifica o prefixo de `mapeamento` a partir de `--grupo`, do caminho da URL ou do HTML."""
     for filtro in filtros_grupo or []:
@@ -1027,14 +1043,7 @@ class Pipeline:
 
             unificar = False
             if len(emails_grupo) >= 2:
-                if any(not e.get("id") for e in emails_grupo):
-                    def _dt_ord(e):
-                        try:
-                            dt = email.utils.parsedate_to_datetime(e.get("data", ""))
-                            return dt if dt.tzinfo else dt.replace(tzinfo=datetime.timezone.utc)
-                        except Exception:
-                            return datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)
-                    emails_grupo.sort(key=_dt_ord, reverse=True)
+                emails_grupo.sort(key=_chave_cronologica_email)
                 if self.opcoes.unificar == "sim":
                     unificar = True
                 elif self.opcoes.unificar == "perguntar" and self.opcoes.interativo:
