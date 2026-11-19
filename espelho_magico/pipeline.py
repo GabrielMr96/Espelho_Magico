@@ -324,10 +324,24 @@ def _montar_item_de_html(url, html, filtros_grupo=None, mapeamento=None, data_fo
     }
 
 
+def _get_sem_cache(get, url, timeout=20):
+    """Executa GET tentando contornar cache de CDN quando usando `requests.get` real."""
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+    }
+    alvo = url
+    if get is requests.get:
+        sep = "&" if "?" in url else "?"
+        alvo = f"{url}{sep}_cb={int(time.time())}"
+    return get(alvo, headers=headers, timeout=timeout)
+
+
 def buscar_email_de_url(url, filtros_grupo=None, mapeamento=None, get=requests.get, data_forcada=None):
     """Baixa uma edição online via URL e monta um dicionário compatível com `buscar_emails`."""
     logger.info(f"[cyan]➜ Baixando edição a partir da URL: {escape(url)}[/cyan]")
-    resposta = get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=30)
+    resposta = _get_sem_cache(get, url, timeout=30)
     resposta.raise_for_status()
     return _montar_item_de_html(url, resposta.text, filtros_grupo, mapeamento, data_forcada=data_forcada)
 
@@ -336,7 +350,7 @@ def _verificar_fonte_thenews(chave, titulo_base, arquivo_url, ultima_data, get=r
     """Verifica na página de arquivo do the news (`thenews.com.br/newsletter/<marca>`) se há edição mais recente."""
     slug_marca = arquivo_url.rstrip("/").split("/")[-1]
     prefixo_href = f"/newsletter/{slug_marca}/"
-    resp = get(arquivo_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
+    resp = _get_sem_cache(get, arquivo_url, timeout=20)
     resp.raise_for_status()
     soup = BeautifulSoup(resp.text, "html.parser")
 
@@ -356,18 +370,43 @@ def _verificar_fonte_thenews(chave, titulo_base, arquivo_url, ultima_data, get=r
         if not ultima_data and (datetime.date.today() - dt).days > 2:
             continue
         url_edicao = urllib.parse.urljoin(arquivo_url, href)
-        candidatos.append((dt, url_edicao))
+        candidatos.append((dt, url_edicao, None))
         if len(candidatos) >= 3:
             break
 
-    candidatos.sort(key=lambda par: par[0])
+    # Fallback direto pela URL canônica (/DD-MM-AAAA) caso o cache de CDN da vitrine ainda não tenha atualizado
+    hoje = datetime.date.today()
+    datas_encontradas = {dt for dt, _, _ in candidatos}
+    for dt_probe in (hoje - datetime.timedelta(days=1), hoje):
+        if dt_probe in datas_encontradas:
+            continue
+        if ultima_data and dt_probe <= ultima_data:
+            continue
+        url_direta = f"{arquivo_url.rstrip('/')}/{dt_probe:%d-%m-%Y}"
+        try:
+            resp_d = _get_sem_cache(get, url_direta, timeout=15)
+            if getattr(resp_d, "status_code", None) != 200:
+                continue
+            soup_d = BeautifulSoup(resp_d.text, "html.parser")
+            if not soup_d.find("h1"):
+                continue
+            dt_pag = extrair_data_de_texto(soup_d.get_text(" ", strip=True)[:3000])
+            if dt_pag == dt_probe:
+                candidatos.append((dt_probe, url_direta, resp_d.text))
+        except Exception:
+            continue
+
+    candidatos.sort(key=lambda trio: trio[0])
     itens = []
-    for dt, url_edicao in candidatos:
+    for dt, url_edicao, html_direto in candidatos:
         logger.info(
             f"[bold cyan]🌐 [Web] Edição de {dt:%d/%m/%Y} encontrada no site para '{escape(titulo_base)}' "
             f"(última local: {ultima_data.strftime('%d/%m/%Y') if ultima_data else 'nenhuma'}). Baixando...[/bold cyan]"
         )
-        itens.append(buscar_email_de_url(url_edicao, filtros_grupo=[chave], get=get, data_forcada=dt))
+        if html_direto is not None:
+            itens.append(_montar_item_de_html(url_edicao, html_direto, filtros_grupo=[chave], data_forcada=dt))
+        else:
+            itens.append(buscar_email_de_url(url_edicao, filtros_grupo=[chave], get=get, data_forcada=dt))
     return itens
 
 
@@ -491,7 +530,7 @@ def _verificar_fonte_beehiiv(
     chave, titulo_base, arquivo_url, ultima_data, get=requests.get, pasta_resultados=None, emails_atuais_grupo=None
 ):
     """Verifica arquivo Beehiiv (`thenewscc.beehiiv.com/archive`, `aidrops.com.br/archive`, `thejobs.com.br/archive`)."""
-    resp = get(arquivo_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
+    resp = _get_sem_cache(get, arquivo_url, timeout=20)
     resp.raise_for_status()
     soup = BeautifulSoup(resp.text, "html.parser")
     cards = _agrupar_cards_beehiiv(soup, arquivo_url)
@@ -564,7 +603,7 @@ def _verificar_fonte_beehiiv(
 
 def _verificar_fonte_thepeak(chave, titulo_base, arquivo_url, ultima_data, get=requests.get):
     """Verifica `readthepeak.com/newsletters/morning-brief` e reúne os artigos públicos da edição se faltar."""
-    resp = get(arquivo_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
+    resp = _get_sem_cache(get, arquivo_url, timeout=20)
     resp.raise_for_status()
     soup = BeautifulSoup(resp.text, "html.parser")
 

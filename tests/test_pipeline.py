@@ -605,6 +605,60 @@ def test_apresentacao_terminal_plano_e_resumo():
     assert "Tamanho" in texto and "15,0 KB" in texto and "14 notícia(s)" in texto
 
 
+def test_thenews_fallback_url_direta_quando_arquivo_desatualizado(tmp_path):
+    hoje = datetime.date.today()
+    ontem = hoje - datetime.timedelta(days=1)
+    (tmp_path / "Gol Contra #203.md").write_text(
+        f"# Gol Contra #203 — {ontem:%d/%m/%Y}\n\n## Ontem\n\nTexto.\n",
+        encoding="utf-8",
+    )
+
+    # Arquivo principal com cache atrasado mostrando só a edição de ontem
+    url_arquivo = "https://thenews.com.br/newsletter/sports"
+    url_hoje = f"{url_arquivo}/{hoje:%d-%m-%Y}"
+    paginas = {
+        url_arquivo: (
+            f'<html><body><a href="/newsletter/sports/{ontem:%d-%m-%Y}">{ontem:%d-%m-%Y}</a></body></html>'
+        ),
+        url_hoje: (
+            f"<html><body><h1>Flamengo ganha reforço hoje</h1>"
+            f"<p>Por the news sports · {hoje:%d-%m-%Y}</p><p>Conteúdo completo da edição de hoje.</p></body></html>"
+        ),
+    }
+
+    class Resp:
+        def __init__(self, status, text=""):
+            self.status_code = status
+            self.text = text
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise RuntimeError(self.status_code)
+
+    cabecalhos_vistos = []
+
+    def fake_get(url, headers=None, timeout=20):
+        cabecalhos_vistos.append(headers or {})
+        if url in paginas:
+            return Resp(200, paginas[url])
+        return Resp(404)
+
+    fontes = {"tns sports": {"tipo": "thenews", "arquivo_url": url_arquivo}}
+    mapeamento = {"tns sports": "Gol Contra"}
+    recuperados = buscar_edicoes_faltantes_na_web(
+        emails_atuais=[],
+        pasta_resultados=tmp_path,
+        fontes_web=fontes,
+        mapeamento=mapeamento,
+        get=fake_get,
+    )
+    assert len(recuperados) == 1
+    assert recuperados[0]["remetente"] == "tns sports"
+    assert "Flamengo ganha reforço hoje" in recuperados[0]["assunto"]
+    assert any(h.get("Cache-Control") == "no-cache" for h in cabecalhos_vistos)
+
+
+
 
 
 
