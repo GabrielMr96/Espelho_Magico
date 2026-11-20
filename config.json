@@ -17,6 +17,12 @@
     "peak"
   ],
 
+  "prefixos_deduplicar_noticias": [
+    "notícias de segurança",
+    "notícias de entretenimento",
+    "notícias de games"
+  ],
+
   "dicas_por_prefixo": {
     "peak": "PROGRAMA 100% EM INGLÊS (The Out of Order Dispatch): Todo o documento de saída — incluindo a linha 1 de data (# Month DD, YYYY, ex.: # November 7, 2026), todos os títulos ##/### (ex.: ## Markets, ## Big Picture, ## Daily Poll) e linhas **Answer:** — DEVE estar 100% em inglês. Nunca use títulos ou rótulos em português. Converta os dados de ## Markets em tópicos narrativos prontos para locução (sem tabelas com pipes). Remova siglas finais de redatores como '— QH' ou '— LA'. Em 'Drop the Pin' ou 'Trivia', mantenha a dica/pergunta e adicione '**Answer:** ...' ao final com a resposta correta e breve contexto em inglês. Colunas em 1ª pessoa ('Last winter, I went...', 'I met...'): converta o relato para 3ª pessoa, remova teasers 'Next week...' e unifique todas as partes da matéria principal sob um único '##'. Renomeie '## Peak Picks' para '## Quick Picks' e descarte 100% de blocos 'Peak Premium', 'Advertise with The Peak' e endereço 'Head Office'. Termine obrigatoriamente com uma ÚNICA seção '## Daily Poll' (4 opções; nunca use título bilíngue como '## Daily Poll / Enquete do Dia').",
     "the news": "No quadro da edição anterior, descarte os botões vazios de hoje ('Na sua visão, a edição de hoje foi imparcial?'), mas extraia OBRIGATORIAMENTE sob '## Voz dos Ouvintes' o resultado completo da enquete anterior (todos os percentuais, incluindo Imparcial, Direita, Esquerda e total de votos) e os comentários com suas tags (Imparcial), (Esquerda) e (Direita), adaptando 'leitores'/'The News' para 'ouvintes'/'programa', 'assinem as nossas newsletters' para 'acompanhem os nossos programas' e ignorando elogios soltos de expediente (ex.: recados sobre o estagiário). Descarte integralmente sorteios/campanhas de indicação ('iPhone 18 Pro', 'Streak', 'indique o the news'). Em pautas patrocinadas que tragam estudos (ex.: FGV + ARQ), mantenha apenas os dados do estudo sem citar a marca patrocinadora, taxas promocionais ou investback. Mantenha cada matéria principal sob um ÚNICO título '##' (subtítulos internos da mesma pauta, como desdobramentos de balanço ou impacto financeiro, devem usar '###', nunca um novo '##'). Se um fato do Giro já aparecer no fim de outra matéria (ex.: IPO da Anthropic), não duplique. Finalize com uma ÚNICA seção '## Enquete do Dia' (original ou criada sobre o tema mais quente da edição).",

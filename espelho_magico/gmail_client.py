@@ -165,6 +165,32 @@ def executar_requisicao_google(req, max_tentativas=5):
             raise
 
 
+def _ler_mensagem_gmail(gmail_service, msg_id):
+    """Baixa e estrutura uma mensagem do Gmail; devolve None se falhar ou não tiver corpo legível."""
+    try:
+        detalhes = executar_requisicao_google(
+            gmail_service.users().messages().get(userId="me", id=msg_id, format="full")
+        )
+        payload = detalhes.get("payload", {})
+        html, texto = extrair_corpo(payload)
+        conteudo = html or texto
+        if not conteudo:
+            logger.warning(f"[yellow]⚠ E-mail {msg_id} sem corpo legível. Ignorado.[/yellow]")
+            return None
+        headers = payload.get("headers", [])
+        return {
+            "id": msg_id,
+            "assunto": _header(headers, "Subject", "Newsletter_Sem_Assunto"),
+            "remetente": _header(headers, "From", "Desconhecido"),
+            "data": _header(headers, "Date", ""),
+            "conteudo_html": conteudo,
+            "eh_html": html is not None,
+        }
+    except Exception as e:
+        logger.error(f"[bold red]✖ Falha ao ler e-mail {msg_id}: {escape(str(e))}[/bold red]")
+        return None
+
+
 def buscar_emails(gmail_service):
     """Lista os e-mails não lidos do marcador e extrai o conteúdo. Uma falha isolada não derruba o lote."""
     query = f"label:{config.GMAIL_LABEL} is:unread"
@@ -189,29 +215,38 @@ def buscar_emails(gmail_service):
 
     emails = []
     for msg_id in ids:
-        try:
-            detalhes = executar_requisicao_google(
-                gmail_service.users().messages().get(userId="me", id=msg_id, format="full")
-            )
-            payload = detalhes.get("payload", {})
-            html, texto = extrair_corpo(payload)
-            conteudo = html or texto
-            if not conteudo:
-                logger.warning(f"[yellow]⚠ E-mail {msg_id} sem corpo legível. Ignorado.[/yellow]")
-                continue
-            headers = payload.get("headers", [])
-            emails.append({
-                "id": msg_id,
-                "assunto": _header(headers, "Subject", "Newsletter_Sem_Assunto"),
-                "remetente": _header(headers, "From", "Desconhecido"),
-                "data": _header(headers, "Date", ""),
-                "conteudo_html": conteudo,
-                "eh_html": html is not None,
-            })
-            # Pausa curta cooperativa para respeitar limites por segundo do Gmail
-            time.sleep(0.1)
-        except Exception as e:
-            logger.error(f"[bold red]✖ Falha ao ler e-mail {msg_id}: {escape(str(e))}[/bold red]")
+        item = _ler_mensagem_gmail(gmail_service, msg_id)
+        if item:
+            emails.append(item)
+        # Pausa curta cooperativa para respeitar limites por segundo do Gmail
+        time.sleep(0.1)
+    return emails
+
+
+def buscar_emails_anteriores(gmail_service, prefixo, max_results=30, dias=21):
+    """Busca e-mails já lidos recentes no marcador compatíveis com `prefixo` para compor histórico."""
+    if not gmail_service or not prefixo:
+        return []
+    pref_low = prefixo.lower()
+    query = f'label:{config.GMAIL_LABEL} -is:unread newer_than:{dias}d "{prefixo}"'
+    try:
+        resp = executar_requisicao_google(
+            gmail_service.users().messages().list(userId="me", q=query, maxResults=max_results)
+        )
+    except Exception as e:
+        logger.warning(f"[yellow]⚠ Erro ao buscar histórico no Gmail para '{escape(prefixo)}': {escape(str(e))}[/yellow]")
+        return []
+
+    emails = []
+    for msg in resp.get("messages", []):
+        item = _ler_mensagem_gmail(gmail_service, msg["id"])
+        if not item:
+            continue
+        ass = item["assunto"].lower()
+        rem = item["remetente"].lower()
+        if pref_low in rem or ass.startswith(pref_low):
+            emails.append(item)
+        time.sleep(0.05)
     return emails
 
 

@@ -39,6 +39,7 @@ LOG_PATH = BASE_DIR / "espelho_magico.log"
 RESULTADOS_DIR = BASE_DIR / "resultados_markdown"
 DRY_RUN_DIR = RESULTADOS_DIR / "_dry_run"
 CONTROLE_GOL_PATH = BASE_DIR / "controle_gol.json"
+CONTROLE_NOTICIAS_PATH = BASE_DIR / "controle_noticias.json"
 PROMPTS_DIR = PACKAGE_DIR / "prompts"
 CONFIG_JSON_PATH = BASE_DIR / "config.json"
 
@@ -49,6 +50,13 @@ with open(CONFIG_JSON_PATH, "r", encoding="utf-8") as _f:
 MAPEAMENTO_PREFIXOS = _CONFIG["mapeamento_prefixos"]
 PREFIXO_FUTEBOL = _CONFIG.get("prefixo_futebol", "tns sports")
 PREFIXOS_INGLES = {p.lower() for p in _CONFIG.get("prefixos_ingles", ["peak"])}
+PREFIXOS_DEDUPLICAR_NOTICIAS = {
+    p.lower()
+    for p in _CONFIG.get(
+        "prefixos_deduplicar_noticias",
+        ["notícias de segurança", "notícias de entretenimento", "notícias de games"],
+    )
+}
 DICAS_POR_PREFIXO = {k.lower(): v for k, v in _CONFIG.get("dicas_por_prefixo", {}).items()}
 FONTES_WEB = {k.lower(): v for k, v in _CONFIG.get("fontes_web", {}).items()}
 VERIFICAR_FONTES_WEB = _env_bool("VERIFICAR_FONTES_WEB", True)

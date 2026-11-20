@@ -19,6 +19,12 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn
 from rich.table import Table
 
 from . import config, futebol
+from .deduplicacao import (
+    carregar_historico_noticias,
+    deve_deduplicar_noticias,
+    filtrar_email_noticias_repetidas,
+    registrar_noticias_extraidas,
+)
 from .drive_client import upload_para_drive
 from .gmail_client import autenticar_google, buscar_emails, marcar_como_lido
 from .html_cleaner import limpar_linhas, preparar_conteudo
@@ -1240,6 +1246,8 @@ class Pipeline:
         self.prompt_base = carregar_prompt("espelho_magico")
         self.prompt_unificacao = carregar_prompt("unificacao")
         self.pasta_saida = config.DRY_RUN_DIR if opcoes.dry_run else config.RESULTADOS_DIR
+        self.pasta_historico = config.RESULTADOS_DIR
+        self.caminho_controle_noticias = config.CONTROLE_NOTICIAS_PATH
         self._lock_pendentes = threading.Lock()
         self._nao_iniciados = 0
         self._progress = None
@@ -1418,33 +1426,98 @@ class Pipeline:
             resultados_futebol, data_futebol = futebol.coletar_resultados()
 
         idioma = "en" if (cfg.chave or "").lower() in config.PREFIXOS_INGLES else "pt"
-        textos, emails_ok, entradas = [], [], []
-        if cfg.unificar:
+        dedup_ativo = deve_deduplicar_noticias(cfg.chave)
+        itens_bootstrap, inicializado_agora = [], False
+        emails_para_extrair = [(e, []) for e in cfg.emails]
+        emails_so_duplicados = []
+
+        if dedup_ativo:
+            ids_atuais = [e.get("id") for e in cfg.emails if e.get("id")]
+            chaves_vistas, itens_bootstrap, inicializado_agora = carregar_historico_noticias(
+                cfg.chave,
+                cfg.titulo_base,
+                gmail_service=self.gmail,
+                ids_excluir=ids_atuais,
+                caminho_controle=self.caminho_controle_noticias,
+                pasta_resultados=self.pasta_historico,
+            )
+            if itens_bootstrap:
+                logger.info(
+                    f"[dim]📚 Histórico carregado das extrações anteriores: "
+                    f"{len(itens_bootstrap)} notícia(s) registrada(s)[/dim]"
+                )
+
+            filtrados = []
+            for e in cfg.emails:
+                e_filtrado, removidas, mantidas, total_cards = filtrar_email_noticias_repetidas(e, chaves_vistas)
+                if removidas:
+                    amostra = ", ".join(f"'{r['titulo'][:45]}' ({r['data_hora']})" for r in removidas[:3])
+                    sufixo_am = "…" if len(removidas) > 3 else ""
+                    logger.info(
+                        f"[cyan]🧹 Removida(s) {len(removidas)} notícia(s) repetida(s) de extrações anteriores: "
+                        f"{escape(amostra)}{sufixo_am}[/cyan]"
+                    )
+                if total_cards > 0 and not mantidas:
+                    logger.info(
+                        f"[yellow]⏭ E-mail '{escape(e.get('assunto', ''))}' continha apenas "
+                        f"notícias repetidas ({len(removidas)}). Ignorado.[/yellow]"
+                    )
+                    emails_so_duplicados.append(e)
+                else:
+                    filtrados.append((e_filtrado, mantidas))
+            emails_para_extrair = filtrados
+
+            if not emails_para_extrair:
+                if not self.opcoes.dry_run:
+                    if inicializado_agora:
+                        registrar_noticias_extraidas(
+                            cfg.chave, [], itens_bootstrap=itens_bootstrap,
+                            marcar_inicializado=True, caminho_controle=self.caminho_controle_noticias,
+                        )
+                    if self.gmail:
+                        for email_item in emails_so_duplicados:
+                            if email_item.get("id"):
+                                marcar_como_lido(self.gmail, email_item["id"])
+                self._etapa(cfg, "[yellow]⏭ ignorado (notícias repetidas)[/yellow]", ETAPAS_GRUPO)
+                return ResultadoGrupo(
+                    nome,
+                    "ignorado",
+                    f"⏭️ {cfg.nome_final} ignorado (apenas notícias repetidas)",
+                    "Ignorado: apenas notícias repetidas",
+                    time.time() - inicio,
+                )
+
+        textos, emails_ok, entradas, itens_extraidos_ok = [], [], [], []
+        if cfg.unificar and len(emails_para_extrair) >= 2:
             partes_edicoes = "".join(
                 f"\n\n--- INÍCIO DA EDIÇÃO {i + 1} ---\n\n{self._preparar(e, idioma=idioma, envolver_documento=False)}"
-                for i, e in enumerate(cfg.emails)
+                for i, (e, _) in enumerate(emails_para_extrair)
             ).strip()
             combinado = f"<documento_entrada>\n{partes_edicoes}\n</documento_entrada>"
             entradas.append(combinado)
-            logger.info(f"[cyan]🤖 Enviando {n_emails} e-mails agrupados para extração unificada...[/cyan]")
+            logger.info(f"[cyan]🤖 Enviando {len(emails_para_extrair)} e-mails agrupados para extração unificada...[/cyan]")
             self._etapa(cfg, "🤖 extraindo com IA (unificado)", 1)
             prompt_grupo = self._montar_prompt(cfg.chave, unificar=True)
             texto = self._extrair(combinado, prompt_grupo, cfg.titulo_base, cfg)
             if texto:
                 textos.append(texto)
-                emails_ok.extend(cfg.emails)
+                for e, mantidas in emails_para_extrair:
+                    emails_ok.append(e)
+                    itens_extraidos_ok.extend(mantidas)
         else:
             prompt_grupo = self._montar_prompt(cfg.chave, unificar=False)
-            for i, email_item in enumerate(cfg.emails):
+            n_ext = len(emails_para_extrair)
+            for i, (email_item, mantidas) in enumerate(emails_para_extrair):
                 conteudo = self._preparar(email_item, idioma=idioma)
                 entradas.append(conteudo)
-                sufixo = f" · e-mail {i + 1}/{n_emails}" if n_emails > 1 else ""
+                sufixo = f" · e-mail {i + 1}/{n_ext}" if n_ext > 1 else ""
                 self._etapa(cfg, f"🤖 extraindo com IA{sufixo}", 1)
                 texto = self._extrair(conteudo, prompt_grupo, email_item["assunto"], cfg)
                 if texto:
                     textos.append(texto)
                     emails_ok.append(email_item)
-                if i < n_emails - 1:
+                    itens_extraidos_ok.extend(mantidas)
+                if i < n_ext - 1:
                     time.sleep(2)
 
         if not textos:
@@ -1460,7 +1533,7 @@ class Pipeline:
                 f"Edição descartada para não gerar arquivo vazio.[/bold yellow]"
             )
             if not self.opcoes.dry_run and self.gmail:
-                for email_item in emails_ok:
+                for email_item in emails_ok + emails_so_duplicados:
                     if email_item.get("id"):
                         marcar_como_lido(self.gmail, email_item["id"])
             self._etapa(cfg, "[yellow]⏭ ignorado (sem notícias)[/yellow]", ETAPAS_GRUPO)
@@ -1544,6 +1617,15 @@ class Pipeline:
             base["segundos"] = time.time() - inicio
             return ResultadoGrupo(nome, "dry", f"🧪 {cfg.nome_final} gerado em modo dry-run", "Gerado (dry-run, sem Drive)", **base)
 
+        if dedup_ativo and (itens_extraidos_ok or inicializado_agora):
+            registrar_noticias_extraidas(
+                cfg.chave,
+                itens_extraidos_ok,
+                itens_bootstrap=itens_bootstrap,
+                marcar_inicializado=True,
+                caminho_controle=self.caminho_controle_noticias,
+            )
+
         if data_futebol:
             try:
                 futebol.salvar_ultima_data(data_futebol)
@@ -1554,17 +1636,18 @@ class Pipeline:
         if self.drive:
             upload_para_drive(self.drive, caminho, cfg.nome_final)
         if self.gmail:
-            for email_item in emails_ok:
+            for email_item in emails_ok + emails_so_duplicados:
                 if email_item.get("id"):
                     marcar_como_lido(self.gmail, email_item["id"])
 
         self._etapa(cfg, f"[green]✔ concluído · {kb}[/green]", ETAPAS_GRUPO)
         base["segundos"] = time.time() - inicio
-        parcial = len(emails_ok) < n_emails
+        processados = len(emails_ok) + len(emails_so_duplicados)
+        parcial = processados < n_emails
         if parcial:
-            sufixo = f" ({len(emails_ok)}/{n_emails} e-mails; os demais continuam não lidos)"
+            sufixo = f" ({processados}/{n_emails} e-mails; os demais continuam não lidos)"
             return ResultadoGrupo(nome, "parcial", f"⚠️ {cfg.nome_final} gerado com sucesso!{sufixo}",
-                                  f"Gerado com {len(emails_ok)}/{n_emails} e-mails", **base)
+                                  f"Gerado com {processados}/{n_emails} e-mails", **base)
         return ResultadoGrupo(nome, "ok", f"✅ {cfg.nome_final} gerado com sucesso!",
                               "Gerado e enviado ao Drive" if self.drive else "Gerado", **base)
 
