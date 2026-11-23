@@ -102,6 +102,10 @@ MAX_RODADAS = _env_int("MAX_RODADAS", 8)
 BACKOFF_BASE = _env_int("BACKOFF_BASE", 20)
 BACKOFF_MAX = _env_int("BACKOFF_MAX", 300)
 IA_TEMPO_MAX = _env_int("IA_TEMPO_MAX", 900)
+# Pausa curta (s) para tentar novamente os modelos principais em picos de 503 antes de baixar para lite/gemma.
+PAUSA_ANTES_DOWNGRADE = _env_int("PAUSA_ANTES_DOWNGRADE", 6)
+# Ativa segunda passagem seletiva (reextração de partes rebaixadas + auditoria estrutural/comercial pós-fatiamento).
+DUPLA_PASSAGEM_REVISAO = _env_bool("DUPLA_PASSAGEM_REVISAO", True)
 
 # --- Execução ----------------------------------------------------------------
 HTML_PRECLEAN = _env_bool("HTML_PRECLEAN", True)

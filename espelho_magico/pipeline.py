@@ -32,6 +32,7 @@ from .llm import (
     Extrator,
     FalhaExtracao,
     dividir_conteudo_com_metadados,
+    modelo_eh_inferior,
     unir_partes_extraidas,
     verificar_completude,
 )
@@ -51,6 +52,16 @@ _INSTRUCAO_PARTE = (
     "NUNCA escreva avisos meta como 'A resposta oficial não consta nesta parte da edição' em quizzes/curiosidades: "
     "se o gabarito não estiver nesta parte, preencha `**Resposta:** ...` diretamente com a resposta factual.\n"
     "</modo_parte>"
+)
+
+_INSTRUCAO_SEGUNDA_PASSAGEM = (
+    "<segunda_passagem_revisao>\n"
+    "ATENÇÃO: A primeira tentativa deste trecho precisou usar um modelo leve de fallback. "
+    "Reextraia o conteúdo abaixo do zero com rigor máximo do modelo principal:\n"
+    "- Se este trecho for 100% comercial, cupom de desconto, oferta de Black Friday ou publieditorial sem notícia real, "
+    "responda APENAS com `[SEM_CONTEUDO_EDITORIAL]`.\n"
+    "- Para todas as notícias legítimas, copie 100% dos fatos, números, parágrafos e citações na íntegra (sem resumir).\n"
+    "</segunda_passagem_revisao>"
 )
 
 _MESES_PT = (
@@ -784,10 +795,25 @@ def _tokens_paragrafo(norm_txt):
     return {w for w in re.findall(r"[a-záéíóúâêôãõç0-9]{4,}", norm_txt)}
 
 
+_RE_RODAPE_SEO_CURTO = re.compile(
+    r"\b(?:está disponível para|disponível para ps5|encerrou um hiato de|"
+    r"tem lançamento marcado para|chega aos cinemas em|estreia nos cinemas em)\b",
+    re.I,
+)
+
+
+def _eh_rodape_seo_curto(norm_txt):
+    return 28 <= len(norm_txt) < 160 and bool(_RE_RODAPE_SEO_CURTO.search(norm_txt))
+
+
 def _paragrafo_ja_visto(nb, tb, vistos):
+    eh_seo = _eh_rodape_seo_curto(nb)
     for v_norm, v_tok in vistos:
         if nb == v_norm:
             return True
+        if eh_seo and _eh_rodape_seo_curto(v_norm):
+            if SequenceMatcher(None, nb, v_norm).ratio() >= 0.78:
+                return True
         if len(nb) >= 90 and len(v_norm) >= 90:
             if SequenceMatcher(None, nb, v_norm).ratio() >= 0.72:
                 return True
@@ -833,10 +859,13 @@ def _remover_paragrafos_redundantes(texto):
             eh_prosa = not b.startswith("#") and not re.match(r"^\s*(?:[-*•]|\d+[.)])\s+", b) and b != "---"
             nb = _norm_paragrafo(b)
             tb = _tokens_paragrafo(nb)
-            if eh_prosa and len(nb) >= 55:
-                prosa_total += 1
+            rastreavel = len(nb) >= 55 or _eh_rodape_seo_curto(nb)
+            if eh_prosa and rastreavel:
+                if len(nb) >= 55:
+                    prosa_total += 1
                 if _paragrafo_ja_visto(nb, tb, vistos):
-                    prosa_dup += 1
+                    if len(nb) >= 55:
+                        prosa_dup += 1
                     continue
             novos_blocos.append(b)
 
@@ -849,7 +878,7 @@ def _remover_paragrafos_redundantes(texto):
 
         for b in novos_blocos:
             nb = _norm_paragrafo(b)
-            if len(nb) >= 55:
+            if len(nb) >= 55 or _eh_rodape_seo_curto(nb):
                 vistos.append((nb, _tokens_paragrafo(nb)))
 
         partes_sec = [s["linhas"][0]]
@@ -864,11 +893,21 @@ def _remover_paragrafos_redundantes(texto):
 
 _STOPWORDS_TOPICO = _STOPWORDS_RESUMO | {
     "nesta", "nesse", "nisso", "disso", "deste", "agencia", "agência", "afirmou",
-    "revelou", "apontou", "mostrou", "empresa", "empresas", "governo", "estados",
-    "unidos", "americana", "americano", "bilhões", "bilhoes", "milhões", "milhoes",
+    "revelou", "revela", "apontou", "aponta", "mostrou", "mostra", "confirma", "confirmou",
+    "explica", "explicou", "ganha", "ganhou", "comenta", "comentou", "garante", "garantiu",
+    "defende", "defendeu", "critica", "criticou", "anunciou", "lançou", "lancou",
+    "promete", "prometeu", "falou", "citou", "pediu", "passa", "segue", "entra",
+    "tenta", "relembra", "empresa", "empresas", "governo", "estados", "unidos",
+    "americana", "americano", "bilhões", "bilhoes", "milhões", "milhoes",
     "anuncia", "lança", "lanca", "chega", "volta", "primeira", "primeiro",
+    "segunda", "segundo", "terceira", "terceiro", "grande", "grandes",
     "poderia", "deveria", "terão", "terao", "foram", "ações", "acoes", "plano",
-    "grupo", "setor", "ontem", "agora",
+    "grupo", "setor", "ontem", "agora", "filme", "filmes", "série", "serie",
+    "séries", "series", "jogos", "elenco", "personagem", "personagens", "diretor",
+    "diretora", "atriz", "estúdio", "estudio", "temporada", "lançamento", "lancamento",
+    "estreia", "história", "historia", "detalhes", "versão", "versao", "franquia",
+    "cinema", "cinemas", "público", "publico", "texto", "vídeo", "video", "trailer",
+    "imagem", "imagens", "partes", "melhores",
 }
 
 _SECOES_GIRO = (
@@ -1252,6 +1291,7 @@ class Pipeline:
         self._nao_iniciados = 0
         self._progress = None
         self._tarefas = {}
+        self._tls_extracao = threading.local()
 
     # -- painel de progresso por programa --
     def _etapa(self, cfg, texto, passo=None):
@@ -1357,34 +1397,96 @@ class Pipeline:
             return f"{bloco_meta}\n\n{corpo_final}"
         return corpo_final
 
+    def _extrair_tier_principal(self, conteudo, prompt):
+        """Chama o extrator restringindo aos modelos principais quando suportado."""
+        try:
+            return self.extrator.extrair(conteudo, prompt, apenas_tier_principal=True)
+        except TypeError:
+            return self.extrator.extrair(conteudo, prompt)
+
+    def _revisar_parte_rebaixada(self, parte, prompt_base, rotulo, modelos_anteriores, cfg=None):
+        """Reextrai uma parte que caiu em modelo leve (lite/gemma) tentando o tier principal."""
+        modelos_str = ", ".join(dict.fromkeys(m for m in modelos_anteriores if modelo_eh_inferior(m)))
+        logger.info(
+            f"[cyan]🔄 Segunda passagem ({escape(rotulo)}): extraída por modelo leve ({escape(modelos_str)}) "
+            f"→ revisando com modelo principal...[/cyan]"
+        )
+        self._etapa(cfg, f"🔄 2ª passagem (modelo principal)")
+        prompt_rev = f"{prompt_base}\n\n{_INSTRUCAO_SEGUNDA_PASSAGEM}"
+        if hasattr(self.extrator, "resetar_modelos_usados"):
+            self.extrator.resetar_modelos_usados()
+        try:
+            texto_rev = self._extrair_tier_principal(parte, prompt_rev)
+        except FalhaExtracao as e:
+            logger.warning(
+                f"[yellow]⚠ Segunda passagem ({escape(rotulo)}) não conseguiu modelo principal "
+                f"({escape(str(e))}); mantendo extração inicial.[/yellow]"
+            )
+            return None
+        if not texto_rev or not texto_rev.strip():
+            return None
+        logger.info(f"[green]✔ Segunda passagem ({escape(rotulo)}) concluída com modelo principal![/green]")
+        return texto_rev.strip()
+
     def _extrair(self, conteudo, prompt, rotulo, cfg=None):
         partes = dividir_conteudo_com_metadados(conteudo, max_chars=config.MAX_CHARS_POR_CHAMADA)
         if len(partes) > 1:
+            self._tls_extracao.foi_fatiado = True
             logger.info(
                 f"[cyan]✂ Conteúdo extenso ({len(conteudo):,} caracteres): dividido em {len(partes)} partes "
                 f"(~{len(conteudo) // len(partes):,} cada) para evitar timeout (504) e limite de tokens (413)[/cyan]"
             )
             extraidas = []
+            rebaixadas = []
             for idx, parte in enumerate(partes, 1):
                 rotulo_parte = f"{rotulo} [parte {idx}/{len(partes)}]"
                 self._etapa(cfg, f"🤖 extraindo com IA · parte {idx}/{len(partes)}")
                 logger.info(f"[cyan]🤖 Parte {idx}/{len(partes)} → IA[/cyan]")
                 prompt_parte = f"{prompt}\n\n{_INSTRUCAO_PARTE.format(i=idx, n=len(partes))}"
-                texto_parte = self._extrair_unico(parte, prompt_parte, rotulo_parte)
+                texto_parte, modelos_parte = self._extrair_unico(parte, prompt_parte, rotulo_parte)
                 if not texto_parte:
                     return None
                 extraidas.append(texto_parte)
+                if any(modelo_eh_inferior(m) for m in modelos_parte):
+                    rebaixadas.append((idx - 1, parte, prompt_parte, rotulo_parte, modelos_parte))
                 if idx < len(partes):
                     time.sleep(2)
+
+            if rebaixadas and config.DUPLA_PASSAGEM_REVISAO:
+                self._tls_extracao.houve_downgrade = True
+                for pos, parte, prompt_parte, rotulo_parte, modelos_parte in rebaixadas:
+                    revisada = self._revisar_parte_rebaixada(parte, prompt_parte, rotulo_parte, modelos_parte, cfg)
+                    if revisada:
+                        extraidas[pos] = revisada
+            elif rebaixadas:
+                self._tls_extracao.houve_downgrade = True
+
             return unir_partes_extraidas(extraidas)
-        return self._extrair_unico(conteudo, prompt, rotulo)
+
+        texto, modelos_usados = self._extrair_unico(conteudo, prompt, rotulo)
+        if not texto:
+            return None
+        if len(modelos_usados) > 1:
+            self._tls_extracao.foi_fatiado = True
+        if any(modelo_eh_inferior(m) for m in modelos_usados):
+            self._tls_extracao.houve_downgrade = True
+            if config.DUPLA_PASSAGEM_REVISAO:
+                revisada = self._revisar_parte_rebaixada(conteudo, prompt, rotulo, modelos_usados, cfg)
+                if revisada:
+                    texto = revisada
+        return texto
 
     def _extrair_unico(self, conteudo, prompt, rotulo):
+        if hasattr(self.extrator, "resetar_modelos_usados"):
+            self.extrator.resetar_modelos_usados()
         try:
             texto = self.extrator.extrair(conteudo, prompt)
         except FalhaExtracao as e:
             logger.error(f"[bold red]✖ {escape(str(e))} ({escape(rotulo)})[/bold red]")
-            return None
+            return None, []
+        modelos_usados = (
+            self.extrator.obter_modelos_usados() if hasattr(self.extrator, "obter_modelos_usados") else []
+        )
         if config.HTML_PRECLEAN and not verificar_completude(conteudo, texto):
             logger.warning(
                 f"[yellow]⚠ Extração de '{escape(rotulo)}' parece incompleta "
@@ -1395,7 +1497,7 @@ class Pipeline:
             logger.warning(
                 f"[yellow]⚠ Extração de '{escape(rotulo)}' veio sem cabeçalho '# Data' de nível 1.[/yellow]"
             )
-        return texto_limpo
+        return texto_limpo, modelos_usados
 
     def processar_grupo(self, cfg):
         with self._lock_pendentes:
@@ -1412,6 +1514,8 @@ class Pipeline:
 
     def _processar_grupo(self, cfg):
         inicio = time.time()
+        self._tls_extracao.foi_fatiado = False
+        self._tls_extracao.houve_downgrade = False
         nome = Path(cfg.nome_final).stem
         n_emails = len(cfg.emails)
         logger.info(
@@ -1584,12 +1688,21 @@ class Pipeline:
         def reparar_com_ia(conteudo, prompt):
             return self.extrator.extrair(conteudo, prompt)
 
+        foi_fatiado = bool(getattr(self._tls_extracao, "foi_fatiado", False))
+        houve_downgrade = bool(getattr(self._tls_extracao, "houve_downgrade", False))
+        revisar_estrutura = (
+            self._extrair_tier_principal
+            if (config.DUPLA_PASSAGEM_REVISAO and self.extrator and (foi_fatiado or houve_downgrade))
+            else None
+        )
+
         final, relatorio = aplicar_dupla_verificacao(
             final, "\n\n".join(entradas), idioma,
             gerar=gerar_enquete if self.extrator else None,
             extrair_data=extrair_data_de_texto,
             reparar=reparar_com_ia if self.extrator else None,
             notificar=notificar_verificacao,
+            revisar_estrutura=revisar_estrutura,
         )
         final = consolidar_secoes_mesmo_assunto(final)
         final = aplicar_cabecalho_edicao(final, cfg.nome_final)
@@ -1709,7 +1822,7 @@ def _painel_configuracao(opcoes):
         grade.add_row("🔑 Chaves Gemini", f"{len(config.GEMINI_API_KEYS)} (rotação automática em caso de cota 429)")
     grade.add_row("⚙  Paralelismo", f"até {opcoes.max_workers or config.MAX_WORKERS} programa(s) ao mesmo tempo")
     grade.add_row("✂  Fatiamento", f"partes de até {config.MAX_CHARS_POR_CHAMADA:,} caracteres (anti-504/413)")
-    grade.add_row("🔎 Dupla verificação", "estrutura · integridade dos números · tabelas · idioma · enquete")
+    grade.add_row("🔎 Dupla verificação", "estrutura · 2ª passagem seletiva · integridade · tabelas · idioma · enquete")
     pasta = config.DRY_RUN_DIR if opcoes.dry_run else config.RESULTADOS_DIR
     destino = str(pasta) + ("  [yellow](dry-run: sem Drive e sem marcar e-mails)[/yellow]" if opcoes.dry_run else "  + Google Drive")
     grade.add_row("💾 Saída", destino)

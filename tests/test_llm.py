@@ -312,3 +312,83 @@ def test_alternativo_413_divide_entrada_e_une_resposta():
     assert "## Parte 1" in saida and "## Parte 2" in saida
 
 
+def test_pausa_e_retenta_tier_principal_antes_de_downgrade_para_lite():
+    tentativas = {"gemini-4-hydrogen": 0, "gemini-3.6-flash": 0, "gemini-flash-lite-latest": 0}
+
+    class ClientePico503:
+        def __init__(self):
+            self.chamadas = []
+            self.models = self
+
+        def generate_content(self, model, contents, config):
+            self.chamadas.append(model)
+            tentativas[model] += 1
+            if model == "gemini-4-hydrogen":
+                raise _api_error(503)
+            if model == "gemini-3.6-flash" and tentativas[model] == 1:
+                raise _api_error(503)
+            return _resposta(f"ok:{model}")
+
+    c = ClientePico503()
+    esperas = []
+    g = GerenciadorGemini(
+        ["k"],
+        ["gemini-4-hydrogen", "gemini-3.6-flash", "gemini-flash-lite-latest"],
+        sleep=esperas.append,
+        client_factory=lambda k: c,
+        pausa_antes_downgrade=5,
+    )
+    g.resetar_modelos_usados()
+    out = g.extrair("conteudo", "prompt")
+    assert out == "ok:gemini-3.6-flash"
+    assert esperas == [5.0]
+    assert tentativas["gemini-flash-lite-latest"] == 0
+    assert g.obter_modelos_usados() == ["gemini-3.6-flash"]
+
+
+def test_apenas_tier_principal_nao_usa_modelos_lite():
+    c = ClienteFake({
+        "gemini-4-hydrogen": _api_error(503),
+        "gemini-3.6-flash": _api_error(503),
+        "gemini-flash-lite-latest": _resposta("lite"),
+    })
+    g, _ = _gerenciador([c], ["gemini-4-hydrogen", "gemini-3.6-flash", "gemini-flash-lite-latest"])
+    with pytest.raises(FalhaExtracao):
+        g.extrair("c", "p", max_rodadas=1, apenas_tier_principal=True)
+    assert "gemini-flash-lite-latest" not in c.chamadas
+
+
+def test_dividir_prioriza_artigos_datados_e_categorias_newsletter():
+    from espelho_magico.llm import dividir_em_duas_partes
+
+    # 1) Feed com 2 artigos datados onde o 1º tem vários subtítulos internos `##`
+    feed = (
+        "<documento_entrada>\n"
+        "## Como bloquear chamadas no celular\n\n23/11/2026 às 17:26\n\n"
+        + ("Introdução detalhada do guia de bloqueio. " * 25)
+        + "\n\n## Como bloquear no iPhone\n\n" + ("Passos do iPhone. " * 30)
+        + "\n\n## Como bloquear no Android\n\n" + ("Passos do Android. " * 30)
+        + "\n\n## Galaxy S27 Ultra pode ganhar modo de envio seguro\n\n23/11/2026 às 13:47\n\n"
+        + ("Detalhes do Galaxy S27 Ultra e bateria de 5.534 mAh. " * 40)
+        + "\n</documento_entrada>"
+    )
+    p1, p2 = dividir_em_duas_partes(feed)
+    assert "## Como bloquear no Android" in p1
+    assert "## Galaxy S27 Ultra" not in p1
+    assert "## Galaxy S27 Ultra" in p2
+
+    # 2) Newsletter com categorias ###### e subtítulo ### interno
+    news = (
+        "<documento_entrada>\n"
+        "###### MUNDO\n\n# Conferência climática\n\n" + ("Detalhes da COP31. " * 40)
+        + "\n\n###### ECONOMIA\n\n# Quem paga a aposentadoria\n\n" + ("Dados globais da previdência. " * 35)
+        + "\n\n### No Brasil, a lógica é parecida\n\n" + ("Dados do INSS no Brasil. " * 20)
+        + "\n\n###### TENDÊNCIA\n\n# IA em pesquisas de mercado\n\n" + ("Estudo da Colgate com IA. " * 45)
+        + "\n</documento_entrada>"
+    )
+    n1, n2 = dividir_em_duas_partes(news)
+    # Deve cortar na categoria ###### (ECONOMIA ou TENDÊNCIA), nunca entre ECONOMIA e ### No Brasil
+    assert ("###### ECONOMIA" in n1 and "### No Brasil" in n1) or ("###### ECONOMIA" in n2 and "### No Brasil" in n2)
+
+
+

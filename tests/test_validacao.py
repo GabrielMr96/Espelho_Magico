@@ -729,4 +729,209 @@ def test_cobertura_pautas_detecta_e_recupera_noticia_sem_numeros_omitida():
     assert pct_final == 100 and not omitidas_final
 
 
+def test_remove_secao_cupom_comercial_e_ignora_numeros_do_card_cupom_preservando_cupom_fiscal():
+    entrada = (
+        "--- INÍCIO DA EDIÇÃO 1 ---\n\n"
+        "## Cupom NordVPN: como assinar a melhor VPN com até 75% de desconto\n\n"
+        "23/11/2026 às 08:30\n\n"
+        "Em outubro de 2025, atingiu 817 Mbps e nota 58 em 60 pontos. Use o cupom TECNOBLOG.\n\n"
+        "--- INÍCIO DA EDIÇÃO 2 ---\n\n"
+        "## Cupom fiscal paulista muda regras em 2026\n\n"
+        "23/11/2026 às 14:00\n\n"
+        "A Secretaria da Fazenda atualizou as regras de crédito de 15% e 30 dias.\n\n"
+        "## Galaxy S27 Ultra pode ganhar modo de envio seguro\n\n"
+        "23/11/2026 às 13:47\n\n"
+        "A bateria de 5.534 mAh limita recarga a 80% por 14 dias. A seguir, o Tecnoblog mostra como funciona.\n"
+    )
+    md = (
+        "# 23 de novembro de 2026\n\n"
+        "## Cupom NordVPN: como assinar a melhor VPN com até 75% de desconto\n\n"
+        "Desconto de 75% na Black Friday por R$ 9,90 ao mês.\n\n"
+        "## Cupom fiscal paulista muda regras em 2026\n\n"
+        "A Secretaria da Fazenda atualizou as regras de crédito de 15% e 30 dias.\n\n"
+        "## Galaxy S27 Ultra pode ganhar modo de envio seguro\n\n"
+        "A seguir, o Tecnoblog mostra como funciona.\n\n"
+        "A bateria de 5.534 mAh limita recarga a 80% por 14 dias.\n\n"
+        "## Enquete do Dia\n\nQual notícia chamou mais atenção?\n\n- Cupom fiscal\n- Galaxy S27\n- Nenhum\n- Ambos\n"
+    )
+    final, rel = aplicar_dupla_verificacao(md, entrada=entrada, idioma="pt", extrair_data=extrair_data_de_texto)
+    assert "NordVPN" not in final
+    assert "A seguir, o Tecnoblog mostra" not in final
+    assert "## Cupom fiscal paulista muda regras em 2026" in final
+    assert "## Galaxy S27 Ultra pode ganhar modo de envio seguro" in final
+    assert _status(rel, "Ruído") == CORRIGIDO
+    assert _status(rel, "Integridade") == OK
+    assert not rel.tem_aviso
+
+
+def test_reparo_ruido_com_ia_pode_remover_secao_comercial_inteira():
+    md = (
+        "# 23 de novembro de 2026\n\n"
+        "## Oferta especial de VPN\n\n"
+        "Assine hoje e use o cupom PROMO50 para pagar menos.\n\n"
+        "## Galaxy S27 Ultra ganha modo seguro\n\n"
+        "O recurso limita a bateria a 80% durante o transporte.\n\n"
+        "## Enquete do Dia\n\nVale a pena?\n\n- Sim\n- Não\n- Talvez\n- Depende\n"
+    )
+
+    def reparar_ruido(_txt, _prompt):
+        return (
+            "# 23 de novembro de 2026\n\n"
+            "## Galaxy S27 Ultra ganha modo seguro\n\n"
+            "O recurso limita a bateria a 80% durante o transporte.\n\n"
+            "## Enquete do Dia\n\nVale a pena?\n\n- Sim\n- Não\n- Talvez\n- Depende\n"
+        )
+
+    final, rel = aplicar_dupla_verificacao(md, idioma="pt", extrair_data=extrair_data_de_texto, reparar=reparar_ruido)
+    assert "Oferta especial de VPN" not in final
+    assert "PROMO50" not in final
+    assert "## Galaxy S27 Ultra ganha modo seguro" in final
+    assert _status(rel, "Ruído") == CORRIGIDO
+    assert not rel.tem_aviso
+
+
+def test_auditoria_estrutural_segunda_passagem_json():
+    from espelho_magico.validacao import auditar_estrutura_com_ia
+
+    md = (
+        "# 23 de novembro de 2026\n\n"
+        "## Muito mais que ocultar o IP: o que a NordVPN protege\n\n"
+        "Com uma assinatura você protege até 10 dispositivos com antivírus e garantia de 30 dias.\n\n"
+        "## O impacto da previdência no orçamento global\n\n"
+        "Um gráfico do Financial Times mostra aumento dos gastos com aposentadoria no mundo rico.\n\n"
+        "## No Brasil, a lógica é parecida\n\n"
+        "O INSS gastou R$ 1 trilhão em 2025, ou 43% de tudo que o governo federal gasta.\n\n"
+        "## David Fincher revela convite para filme do Batman\n\n"
+        "O diretor comentou sua proposta sombria para o Batman nos anos 90.\n\n"
+        "### Charlie Cox revela ter sido barrado em 007\n\n"
+        "O ator contou que foi considerado velho demais para os testes de James Bond.\n\n"
+        "## Enquete do Dia\n\nQual tema venceu?\n\n- Previdência\n- Cinema\n- Ambos\n- Nenhum\n"
+    )
+
+    def revisar_fake(indice, _prompt):
+        assert "[1] ## Muito mais que ocultar o IP" in indice
+        assert "[3] ## No Brasil, a lógica é parecida" in indice
+        assert "Charlie Cox revela ter sido barrado em 007" in indice
+        return (
+            '{"remover_secoes_comerciais": [1], "anexar_ao_anterior": [3], '
+            '"promover_subtitulos": [{"secao": 4, "subtitulo": "Charlie Cox revela ter sido barrado em 007"}]}'
+        )
+
+    final, rel = aplicar_dupla_verificacao(
+        md, idioma="pt", extrair_data=extrair_data_de_texto, revisar_estrutura=revisar_fake
+    )
+    assert "NordVPN" not in final
+    assert "\n## No Brasil, a lógica é parecida" not in final
+    assert "\n### No Brasil, a lógica é parecida" in final
+    assert "INSS gastou R$ 1 trilhão" in final
+    assert "## Charlie Cox revela ter sido barrado em 007" in final
+    assert "velho demais para os testes de James Bond" in final
+    assert _status(rel, "Revisão estrutural") == CORRIGIDO
+    assert not rel.tem_aviso
+
+    # Guarda de segurança: recusa JSON que tente apagar todas as seções editoriais
+    mantido, acoes = auditar_estrutura_com_ia(
+        md, idioma="pt", revisar=lambda _i, _p: '{"remover_secoes_comerciais": [1, 2, 3, 4]}'
+    )
+    assert mantido == md and acoes == []
+
+
+def test_integridade_confirma_ruido_descartado_e_elimina_falso_aviso():
+    entrada = (
+        "## Oferta especial da Surfshark\n\n"
+        "Em outubro de 2025 atingiu 817 Mbps e nota 58 em 60 pontos no plano anual.\n\n"
+        "## Falha crítica em roteadores domésticos\n\n"
+        "Pesquisadores identificaram 12 falhas em 45 modelos que afetam 90 mil aparelhos, "
+        "com correção prevista em 15 dias para versões 2024 e 2026 com taxa de risco 95% e 14 patches.\n"
+    )
+    md = (
+        "# 23 de novembro de 2026\n\n"
+        "## Falha crítica em roteadores domésticos\n\n"
+        "Pesquisadores identificaram 12 falhas em 45 modelos que afetam 90 mil aparelhos, "
+        "com correção prevista em 15 dias para versões 2024 e 2026 com taxa de risco 95% e 14 patches.\n\n"
+        "## Enquete do Dia\n\nVocê atualiza seu roteador?\n\n- Sempre\n- Nunca\n- Nem sei como\n- Só quando quebra\n"
+    )
+    final, rel = aplicar_dupla_verificacao(
+        md,
+        entrada=entrada,
+        idioma="pt",
+        extrair_data=extrair_data_de_texto,
+        reparar=lambda _c, _p: "[APENAS_RUIDO_DESCARTADO] Oferta comercial da Surfshark sem valor editorial",
+    )
+    c_int = _checagem(rel, "Integridade")
+    assert c_int.status == CORRIGIDO
+    assert "Surfshark" in c_int.corrigido
+    assert not rel.tem_aviso
+    assert "817" not in final
+
+
+def test_integridade_recupera_parcialmente_em_doc_longo_e_resolve_restante_na_segunda_tentativa():
+    corpo_extenso = "Detalhamento técnico extenso sobre segurança em smartphones corporativos. " * 130
+    entrada = (
+        "## Segurança em smartphones corporativos\n\n"
+        + corpo_extenso
+        + "\n\nO levantamento avaliou 320 empresas, 48 modelos, 75 vulnerabilidades, 18 meses e 64 patches, "
+        "além de um lote extra de 512 dispositivos testados com 88 alertas críticos.\n\n"
+        "## Parceria comercial de VPN\n\n"
+        "Teste promocional de 2025 atingiu 817 Mbps com nota 58 em 60 pontos.\n"
+    )
+    md_longo = (
+        "# 23 de novembro de 2026\n\n"
+        "## Segurança em smartphones corporativos\n\n"
+        + corpo_extenso
+        + "\n\nO levantamento avaliou 320 empresas, 48 modelos, 75 vulnerabilidades, 18 meses e 64 patches.\n\n"
+        "## Enquete do Dia\n\nQual a prioridade?\n\n- Atualizar tudo\n- Trocar aparelho\n- Ignorar\n- Usar celular antigo\n"
+    )
+    assert len(md_longo) > 8500
+    chamadas = []
+
+    def reparar_em_duas_etapas(conteudo, _prompt):
+        chamadas.append(conteudo)
+        if len(chamadas) == 1:
+            # Em doc longo, devolve apenas o parágrafo faltante sob o mesmo título ##
+            return (
+                "## Segurança em smartphones corporativos\n\n"
+                "Um lote extra de 512 dispositivos foi testado com 88 alertas críticos."
+            )
+        # Na 2ª tentativa, os únicos ausentes restantes (2025, 817, 58, 60) são do bloco comercial
+        return "[APENAS_RUIDO_DESCARTADO] Números exclusivos de parceria comercial de VPN"
+
+    final, rel = aplicar_dupla_verificacao(
+        md_longo,
+        entrada=entrada,
+        idioma="pt",
+        extrair_data=extrair_data_de_texto,
+        reparar=reparar_em_duas_etapas,
+    )
+    assert len(chamadas) == 2
+    assert "512 dispositivos" in final and "88 alertas críticos" in final
+    assert "817" not in final
+    assert _status(rel, "Integridade") == CORRIGIDO
+    assert not rel.tem_aviso
+
+
+def test_reparo_idioma_em_doc_longo_aceita_titulo_traduzido():
+    corpo_en = "Detailed financial analysis of global semiconductor markets and capital flows. " * 125
+    md = (
+        "# November 23, 2026\n\n"
+        "## Global Chip Markets\n\n" + corpo_en + "\n\n"
+        "## Fechamento do Dia\n\n"
+        "Os mercados também estão agitados porque não houve acordo.\n\n"
+        "## Daily Poll\n\nWhat happens next?\n\n- Rally\n- Crash\n- Sideways\n- Holiday\n"
+    )
+    assert len(md) > 8500
+    final, rel = aplicar_dupla_verificacao(
+        md,
+        idioma="en",
+        extrair_data=extrair_data_de_texto,
+        reparar=lambda _c, _p: "## Market Wrap\n\nMarkets remain volatile as no deal was reached.",
+    )
+    assert "## Market Wrap" in final
+    assert "## Fechamento do Dia" not in final
+    assert _status(rel, "Idioma") == CORRIGIDO
+    assert not rel.tem_aviso
+
+
+
+
 

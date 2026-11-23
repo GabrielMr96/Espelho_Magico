@@ -17,6 +17,7 @@ Regras verificadas:
   9. Enquete do Dia presente com opções (gera com IA se faltar; fallback determinístico)
  10. Bloco final na ordem: notícias → Voz dos Ouvintes → Enquete do Dia
 """
+import json
 import re
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
@@ -80,7 +81,10 @@ _RE_SECAO_RUIDO = re.compile(
     r"Indique\s+(?:amigos|e\s+ganhe|o\s+the\s+news).*|"
     r"D[eê]nius\s+Games(?:\b.*)?|"
     r"Campanha\s+FOMO\s+Zero(?:\b.*)?|"
-    r"Dropped\s+by\b.*"
+    r"Dropped\s+by\b.*|"
+    r"Cupom\s+(?!fiscal\b)\S.*(?:desconto|off|oferta|assinar|black\s+friday|promo[cç][aã]o).*|"
+    r"Como\s+(?:resgatar|usar|aproveitar)\s+(?:o\s+)?cupom\b.*|"
+    r"(?:Assine|Garanta|Aproveite)\b.*\b(?:desconto|cupom|Black\s+Friday)\b.*"
     r")$",
     re.I,
 )
@@ -138,6 +142,7 @@ _RE_RUIDO_LINHA = re.compile(
     r"Elevando\s+o\s+QI\s+da\s+internet|Dropped\s+pelos\s+humanos|Se\s+amarra\s+em\s+Youtube|"
     r"Rod\.\s+[^,\n]+,\s*\d+\b|"
     r"🔋?\s*Veja\s+mais\s+nesta\s+entrevista\s+d[eo]\s+\*{0,2}the\s+news\*{0,2}\b[^\n]*|"
+    r"A\s+seguir,\s+o\s+\*{0,2}Tecnoblog\*{0,2}\s+(?:te\s+)?mostra\b[^\n]*|"
     r"(?:Resposta|Answer)\s*:\*{0,2}\s*(?:A\s+resposta\s+oficial\s+n[aã]o\s+consta|The\s+official\s+answer\s+is\s+not\s+included)\b[^\n]*)|"
     r"Quer\s+fazer\s+sua\s+marca\b.*\bAnuncie\b)|"
     r".*?(?:\b\d{5}-\d{3}\b(?:,\s*(?:Brazil|Brasil))?\s*$|"
@@ -752,6 +757,11 @@ _RE_BLOCO_PATROCINADO_FONTE = re.compile(
     r"^#{1,5}[ \t]*(?:DROPPED[ \t]+BY|SPONSORED[ \t]+BY|CAMPANHA[ \t]+FOMO[ \t]+ZERO|COLLAB[ \t]+COM\b)\b.*?(?=\n#{5}[ \t]+\S|\Z)",
     re.S | re.I | re.M,
 )
+_RE_CARD_CUPOM_FONTE = re.compile(
+    r"^##[ \t]+Cupom[ \t]+(?!fiscal\b)\S[^\n]*(?:desconto|off|oferta|assinar|black[ \t]+friday|promo[cç][aã]o)[^\n]*\n"
+    r".*?(?=\n---[ \t]+IN[ÍI]CIO[ \t]+DA[ \t]+EDI[ÇC][ÃA]O|\n##[ \t]+[^\n]+\n+\s*\d{1,2}/\d{1,2}/\d{4}\s*(?:[àa]s|[-–,])?\s*\d{1,2}:\d{2}|\Z)",
+    re.S | re.I | re.M,
+)
 
 
 def _filtrar_para_integridade(texto, eh_entrada=False):
@@ -762,6 +772,7 @@ def _filtrar_para_integridade(texto, eh_entrada=False):
     texto = _RE_IMG_DESC.sub(" ", texto)
     if eh_entrada:
         texto = _RE_BLOCO_PATROCINADO_FONTE.sub(" ", texto)
+        texto = _RE_CARD_CUPOM_FONTE.sub(" ", texto)
         texto = _RE_LEIA_TAMBEM.sub(" ", texto)
         texto, _ = remover_ruido_residual(texto)
     texto = _RE_GERADO_EM.sub(" ", texto)
@@ -1317,7 +1328,17 @@ def _reparar_idioma_com_ia(md, idioma, reparar):
     if parcial:
         _, secs_rep = dividir_secoes(cand)
         mapa = {_norm_titulo(s["titulo"]): s for s in secs_rep}
-        novas = [mapa.get(_norm_titulo(s["titulo"]), s) if s in afetadas else s for s in secoes]
+        pos_por_afetada = (
+            {id(s_af): secs_rep[idx_af] for idx_af, s_af in enumerate(afetadas)}
+            if len(secs_rep) == len(afetadas)
+            else {}
+        )
+        novas = [
+            mapa.get(_norm_titulo(s["titulo"])) or pos_por_afetada.get(id(s), s)
+            if s in afetadas
+            else s
+            for s in secoes
+        ]
         cand = juntar_secoes(pre, novas)
 
     prob, _ = _diagnostico_idioma(cand, idioma)
@@ -1379,8 +1400,20 @@ def _mesclar_secoes_recuperadas(md, recuperado, full_doc):
         if idx is not None:
             txt_rec = "\n".join(s_rec["linhas"])
             txt_old = "\n".join(corpos[idx]["linhas"])
-            if len(_numeros(txt_rec)) >= len(_numeros(txt_old)) and len(txt_rec) >= len(txt_old) * 0.85:
+            nums_rec = _numeros(txt_rec)
+            nums_old = _numeros(txt_old)
+            if len(nums_rec) >= len(nums_old) and len(txt_rec) >= len(txt_old) * 0.85:
                 corpos[idx] = s_rec
+            elif set(nums_rec) - set(nums_old):
+                # Em documentos longos (>8,5 KB), a IA costuma devolver apenas o trecho/parágrafo omitido da seção.
+                corpo_old_norm = " ".join(txt_old.lower().split())
+                blocos_novos = [
+                    b.strip()
+                    for b in re.split(r"\n{2,}", "\n".join(s_rec["linhas"][1:]).strip())
+                    if b.strip() and " ".join(b.lower().split()) not in corpo_old_norm
+                ]
+                if blocos_novos:
+                    corpos[idx]["linhas"] = _sem_rabo(corpos[idx]["linhas"]) + [""] + "\n\n".join(blocos_novos).split("\n")
         else:
             indice_corpos[chave] = len(corpos)
             corpos.append(s_rec)
@@ -1422,8 +1455,26 @@ def _resumir_recuperacao_integridade(
     return " · ".join(partes) or f"preservação em {pct_depois}%", faltantes_depois
 
 
+_TOKEN_APENAS_RUIDO = "[APENAS_RUIDO_DESCARTADO]"
+
+
+def _extrair_motivo_apenas_ruido(resposta):
+    """Retorna o motivo curto se a IA sinalizou `_TOKEN_APENAS_RUIDO`, ou None caso contrário."""
+    if not resposta or _TOKEN_APENAS_RUIDO not in resposta.upper():
+        return None
+    m = re.search(r"\[APENAS_RUIDO_DESCARTADO\]\s*(.*)", resposta, re.I)
+    motivo = (m.group(1).strip() if m else "").splitlines()[0].strip(" :-–—") if m and m.group(1).strip() else ""
+    return motivo[:100]
+
+
 def _reparar_integridade_com_ia(md, entrada, idioma, reparar):
-    """Tenta recuperar com IA notícias/pautas e números omitidos da fonte e detalha o que foi restaurado."""
+    """Tenta recuperar com IA notícias/pautas e números omitidos ou confirmar se os ausentes são apenas ruído.
+
+    Retorna `(md_novo, pct_antes, pct_depois, status_rep, detalhe, faltantes_depois)` onde `status_rep` é:
+    - `"restaurado"`: novos fatos/números/pautas foram restaurados com melhoria mensurável;
+    - `"apenas_ruido"`: a IA confirmou que todos os trechos ausentes eram apenas publicidade/ruído descartado;
+    - `"sem_mudanca"`: não foi possível melhorar nem confirmar descarte seguro.
+    """
     pct_antes, _, faltantes, _, entrada_limpa = _analisar_integridade(entrada, md)
     pct_pautas_antes, pautas_verif, pautas_omitidas = checar_cobertura_pautas(entrada, md)
     pautas_relevantes = (
@@ -1431,13 +1482,21 @@ def _reparar_integridade_com_ia(md, entrada, idioma, reparar):
     )
     trechos = _trechos_para_integridade(entrada_limpa, faltantes, pautas_omitidas=pautas_relevantes)
     if not trechos:
-        return md, pct_antes, pct_antes, False, "", faltantes
+        return md, pct_antes, pct_antes, "sem_mudanca", "", faltantes
 
     lista_ausentes = ", ".join(list(faltantes.values())[:10])
     alvo_msg = (
         f"dados/números e/ou pautas da fonte original (ausentes: {lista_ausentes})"
         if lista_ausentes
         else f"{len(pautas_relevantes)} pauta(s) editorial(is) da fonte original possivelmente omitida(s)"
+    )
+    regra_ruido_descartado = (
+        " NUNCA restaure anúncios, patrocínios, cupons de desconto, taxas promocionais de marcas "
+        "(ex.: ARQ, investback), sorteios de iPhone, planos de assinatura (ex.: Peak Premium), promoções/guia de "
+        "compras (ex.: Black Friday), links órfãos/clickbait, mídia kit ou endereços postais. "
+        f"Se TODOS os trechos/números ausentes em <trechos_fonte> forem exclusivamente publicidade, cupom, oferta "
+        f"comercial, clickbait ou rodapé descartável (sem nenhuma informação jornalística legítima omitida), "
+        f"responda APENAS com: `{_TOKEN_APENAS_RUIDO} <motivo curto em 1 linha>`."
     )
     full_doc = len(md) <= 8500
     if full_doc:
@@ -1446,20 +1505,16 @@ def _reparar_integridade_com_ia(md, entrada, idioma, reparar):
             "TRECHOS DA FONTE e devolva o Markdown COMPLETO restaurando apenas os fatos, pautas e números editoriais "
             "faltantes (concatenando em seções existentes se tratarem do mesmo assunto, ou criando nova seção ##), "
             "mantendo o formato limpo de roteiro (título #, seções ##, tópicos em vez de tabelas, sem URLs e preservando "
-            "Enquete do Dia/Daily Poll ao final). NUNCA restaure anúncios, patrocínios, taxas promocionais de marcas "
-            "(ex.: ARQ, investback), sorteios de iPhone, planos de assinatura (ex.: Peak Premium), promoções/guia de "
-            "compras (ex.: Black Friday), mídia kit ou endereços postais."
+            "Enquete do Dia/Daily Poll ao final)." + regra_ruido_descartado
         )
         conteudo = f"<rascunho_atual>\n{md}\n</rascunho_atual>\n\n<trechos_fonte>\n{trechos}\n</trechos_fonte>"
     else:
         titulos_atuais = "\n".join(f"- {s['titulo']}" for s in dividir_secoes(md)[1] if _eh_secao_noticia(s))
         instrucao = (
             f"A dupla verificação detectou possível omissão de {alvo_msg}. Com base nos TRECHOS DA FONTE, escreva SOMENTE "
-            "as seções ## completas que contêm os fatos/números/pautas editoriais omitidos (mantendo o mesmo título ## exato "
-            "se já existir na pauta para completá-la, ou criando a seção ## omitida), em formato limpo para podcast (sem URLs "
-            "nem tabelas). NUNCA restaure anúncios, patrocínios, taxas promocionais de marcas (ex.: ARQ, investback), sorteios "
-            "de iPhone, planos de assinatura (ex.: Peak Premium), promoções/guia de compras (ex.: Black Friday), mídia kit ou "
-            "endereços postais."
+            "as seções ## que contêm os fatos/números/pautas editoriais omitidos (mantendo o mesmo título ## exato "
+            "se já existir na pauta para complementar o trecho faltante, ou criando a seção ## omitida), em formato limpo "
+            "para podcast (sem URLs nem tabelas)." + regra_ruido_descartado
         )
         conteudo = (
             f"<titulos_ja_extraidos>\n{titulos_atuais}\n</titulos_ja_extraidos>\n\n"
@@ -1469,22 +1524,34 @@ def _reparar_integridade_com_ia(md, entrada, idioma, reparar):
     try:
         resposta = reparar(conteudo, instrucao)
     except Exception:
-        return md, pct_antes, pct_antes, False, "", faltantes
+        return md, pct_antes, pct_antes, "sem_mudanca", "", faltantes
     if not resposta:
-        return md, pct_antes, pct_antes, False, "", faltantes
+        return md, pct_antes, pct_antes, "sem_mudanca", "", faltantes
+
+    motivo_ruido = _extrair_motivo_apenas_ruido(resposta)
+    if motivo_ruido is not None:
+        pauta_ok = len(pautas_verif) < 3 or pct_pautas_antes >= 50
+        if contar_noticias(md) >= 1 and pct_antes >= 50 and pauta_ok:
+            det_ruido = (
+                f"confirmado pela IA que os ausentes eram apenas publicidade/ruído descartado ({motivo_ruido})"
+                if motivo_ruido
+                else "confirmado pela IA que os ausentes eram apenas publicidade/ruído descartado"
+            )
+            return md, pct_antes, pct_antes, "apenas_ruido", det_ruido, faltantes
+        return md, pct_antes, pct_antes, "sem_mudanca", "", faltantes
 
     resposta = _higienizar_candidato(resposta, idioma)
     cand = _mesclar_secoes_recuperadas(md, resposta, full_doc=full_doc)
     cand = _higienizar_candidato(cand, idioma)
     if contar_noticias(cand) < contar_noticias(md) or len(cand) < len(md) * 0.85:
-        return md, pct_antes, pct_antes, False, "", faltantes
+        return md, pct_antes, pct_antes, "sem_mudanca", "", faltantes
 
     pct_depois, _, _, _, _ = _analisar_integridade(entrada, cand)
     pct_pautas_depois, _, _ = checar_cobertura_pautas(entrada, cand)
     melhorou_num = pct_depois > pct_antes
     melhorou_pauta = pct_pautas_depois > pct_pautas_antes and pct_depois >= pct_antes
     if not (melhorou_num or melhorou_pauta):
-        return md, pct_antes, pct_antes, False, "", faltantes
+        return md, pct_antes, pct_antes, "sem_mudanca", "", faltantes
 
     det_rec, faltantes_depois = _resumir_recuperacao_integridade(
         md,
@@ -1495,7 +1562,7 @@ def _reparar_integridade_com_ia(md, entrada, idioma, reparar):
         pct_pautas_antes=pct_pautas_antes,
         pct_pautas_depois=pct_pautas_depois,
     )
-    return cand, pct_antes, pct_depois, True, det_rec, faltantes_depois
+    return cand, pct_antes, pct_depois, "restaurado", det_rec, faltantes_depois
 
 
 def _extrair_pergunta_enquete(bloco):
@@ -1546,7 +1613,219 @@ def _substituir_enquete_incompleta(md, idioma, gerar=None):
     return (sem_enq.rstrip() + "\n\n" + bloco).strip(), bloco, origem, usou_ia
 
 
-def aplicar_dupla_verificacao(md, entrada="", idioma="pt", gerar=None, extrair_data=None, reparar=None, notificar=None):
+# --- Auditoria estrutural e comercial (2ª passagem compacta em JSON) ---------
+
+PROMPT_AUDITORIA_ESTRUTURAL = {
+    "pt": (
+        "Você é o revisor estrutural do Espelho Mágico. Recebeu o índice resumido das seções `##` "
+        "de uma edição que passou por fatiamento de blocos ou modelo de fallback. "
+        "Analise APENAS defeitos estruturais claros e responda EXCLUSIVAMENTE com um JSON válido "
+        "(sem markdown, sem explicações) no formato:\n"
+        '{"anexar_ao_anterior": [4], "remover_secoes_comerciais": [1], "promover_subtitulos": [{"secao": 6, "subtitulo": "Título"}]}\n\n'
+        "Regras estritas:\n"
+        "1. `anexar_ao_anterior`: liste o número da seção SOMENTE quando ela for claramente continuação/subtópico "
+        "da seção imediatamente anterior (ex.: 'No Brasil, a lógica é parecida' logo após previdência global, "
+        "'Como Ativar o Portal Temporal' logo após o guia do portal, 'Motivos pelos quais ligações continuam...' logo após bloqueio de chamadas, "
+        "ou notas soltas que claramente continuam um 'Tour de Manchetes' acima). NUNCA junte duas notícias distintas.\n"
+        "2. `remover_secoes_comerciais`: liste o número da seção SOMENTE quando ela for 100% propaganda, cupom, oferta de Black Friday "
+        "ou publieditorial puro sem fato jornalístico (ex.: 'Cupom NordVPN', 'O que a NordVPN protege' vindo de oferta de assinatura). "
+        "NUNCA remova notícias reais de tecnologia, negócios ou estudos patrocinados com dados reais.\n"
+        "3. `promover_subtitulos`: liste `{\"secao\": N, \"subtitulo\": \"...\"}` SOMENTE quando um subtítulo `###` "
+        "dentro da seção N for na verdade uma notícia completamente diferente e independente que ficou aninhada por engano.\n"
+        "Se tudo estiver correto, retorne listas vazias: "
+        '{"anexar_ao_anterior": [], "remover_secoes_comerciais": [], "promover_subtitulos": []}.'
+    ),
+    "en": (
+        "You are the structural editor for Espelho Mágico. You received a compact outline of `##` sections "
+        "from an edition that was chunk-split or processed by a fallback model. "
+        "Identify ONLY clear structural defects and reply EXCLUSIVELY with valid JSON (no markdown fences, no commentary):\n"
+        '{"anexar_ao_anterior": [4], "remover_secoes_comerciais": [1], "promover_subtitulos": [{"secao": 6, "subtitulo": "Title"}]}\n\n'
+        "Strict rules:\n"
+        "1. `anexar_ao_anterior`: list a section number ONLY if it is unambiguously a continuation/subtopic of the immediately preceding section "
+        "that got split across a chunk boundary. NEVER merge two distinct news stories.\n"
+        "2. `remover_secoes_comerciais`: list a section number ONLY if it is 100% pure ad, affiliate coupon, Black Friday offer, or sponsored pitch "
+        "with zero independent journalism. NEVER remove real business/tech news or studies with real research data.\n"
+        "3. `promover_subtitulos`: list `{\"secao\": N, \"subtitulo\": \"...\"}` ONLY if a `###` subheading inside section N "
+        "is actually a completely unrelated news story mistakenly nested there.\n"
+        "If everything looks clean, return empty lists: "
+        '{"anexar_ao_anterior": [], "remover_secoes_comerciais": [], "promover_subtitulos": []}.'
+    ),
+}
+
+
+def _eh_secao_auditavel(secao):
+    if not _eh_secao_noticia(secao):
+        return False
+    return not (secao["titulo"] or "").strip().upper().startswith("RESULTADOS")
+
+
+def _montar_indice_auditoria(secoes):
+    """Gera um índice compacto (título, início, fim e subtítulos ###) das seções editoriais."""
+    auditaveis = [(idx, s) for idx, s in enumerate(secoes) if _eh_secao_auditavel(s)]
+    linhas_out = []
+    for num, (_, s) in enumerate(auditaveis, 1):
+        corpo = [l.strip() for l in s["linhas"][1:] if l.strip() and l.strip() != "---"]
+        h3s = [l[4:].strip() for l in corpo if l.startswith("### ")]
+        prosa = [l for l in corpo if not l.startswith("#")]
+        inicio = " ".join(prosa)[:220]
+        fim = " ".join(prosa)[-180:] if len(" ".join(prosa)) > 240 else ""
+        bloco = [f"[{num}] ## {s['titulo']}"]
+        if h3s:
+            bloco.append("  Subtítulos ###: " + " | ".join(h3s[:10]))
+        if inicio:
+            bloco.append(f"  Início: {inicio}")
+        if fim:
+            bloco.append(f"  Fim: ...{fim}")
+        linhas_out.append("\n".join(bloco))
+    return auditaveis, "\n\n".join(linhas_out)
+
+
+def _extrair_json_auditoria(resposta):
+    if not resposta:
+        return None
+    limpo = resposta.strip()
+    m_cerca = re.match(r"^\s*```(?:json)?\s*\n(.*?)\n\s*```\s*$", limpo, re.S | re.I)
+    if m_cerca:
+        limpo = m_cerca.group(1).strip()
+    m_obj = re.search(r"\{.*\}", limpo, re.S)
+    if not m_obj:
+        return None
+    try:
+        dados = json.loads(m_obj.group(0))
+        return dados if isinstance(dados, dict) else None
+    except Exception:
+        return None
+
+
+def auditar_estrutura_com_ia(md, idioma="pt", revisar=None):
+    """Segunda passagem compacta (JSON): corrige `##` partidos no fatiamento, `###` independentes e seções 100% comerciais.
+
+    Aplica cada ação de forma determinística em Python, preservando 100% do texto literal das notícias.
+    Retorna `(md_ajustado, lista_acoes_aplicadas)`.
+    """
+    if not revisar or not md or not md.strip():
+        return md, []
+
+    preambulo, secoes = dividir_secoes(md)
+    auditaveis, indice_txt = _montar_indice_auditoria(secoes)
+    if len(auditaveis) < 2 or not indice_txt:
+        return md, []
+
+    try:
+        resposta = revisar(indice_txt, PROMPT_AUDITORIA_ESTRUTURAL.get(idioma, PROMPT_AUDITORIA_ESTRUTURAL["pt"]))
+    except Exception:
+        return md, []
+
+    plano = _extrair_json_auditoria(resposta)
+    if not plano:
+        return md, []
+
+    n_aud = len(auditaveis)
+    mapa_num_para_idx = {num: idx for num, (idx, _) in enumerate(auditaveis, 1)}
+
+    # 1) Valida e limita remoções comerciais (nunca apaga todas as notícias)
+    remover_nums = []
+    for x in plano.get("remover_secoes_comerciais") or []:
+        if isinstance(x, int) and 1 <= x <= n_aud and x not in remover_nums:
+            remover_nums.append(x)
+    if len(remover_nums) >= n_aud:
+        remover_nums = []
+    indices_remover = {mapa_num_para_idx[x] for x in remover_nums}
+
+    # 2) Valida anexações ao anterior (seções consecutivas na lista real e nenhuma removida)
+    anexar_nums = sorted(
+        {
+            x
+            for x in (plano.get("anexar_ao_anterior") or [])
+            if isinstance(x, int) and 2 <= x <= n_aud
+        },
+        reverse=True,
+    )
+
+    # 3) Valida promoções de subtítulos ### para ##
+    promover_req = []
+    for item in plano.get("promover_subtitulos") or []:
+        if not isinstance(item, dict):
+            continue
+        sec_num = item.get("secao")
+        sub_tit = (item.get("subtitulo") or "").strip()
+        if isinstance(sec_num, int) and 1 <= sec_num <= n_aud and sub_tit:
+            promover_req.append((mapa_num_para_idx[sec_num], sub_tit))
+
+    if not indices_remover and not anexar_nums and not promover_req:
+        return md, []
+
+    # Trabalha em cópia limpa das seções
+    novas_secoes = [{"titulo": s["titulo"], "linhas": list(s["linhas"]), "_orig_idx": i} for i, s in enumerate(secoes)]
+    acoes = []
+
+    # A) Promover subtítulos ### independentes (antes de anexar/remover, usando _orig_idx)
+    if promover_req:
+        expandidas = []
+        for s in novas_secoes:
+            alvos = [sub for idx_o, sub in promover_req if idx_o == s["_orig_idx"]]
+            if not alvos or s["_orig_idx"] in indices_remover:
+                expandidas.append(s)
+                continue
+            alvos_norm = {_norm_titulo(a): a for a in alvos}
+            partes_split = []
+            atual = {"titulo": s["titulo"], "linhas": [], "_orig_idx": s["_orig_idx"]}
+            for linha in s["linhas"]:
+                m_h3 = re.match(r"^###\s+(.+?)\s*$", linha)
+                if m_h3 and _norm_titulo(m_h3.group(1)) in alvos_norm:
+                    if atual["linhas"]:
+                        partes_split.append(atual)
+                    novo_tit = m_h3.group(1).strip()
+                    atual = {"titulo": novo_tit, "linhas": [f"## {novo_tit}"], "_orig_idx": None}
+                    acoes.append(f"subtítulo '{novo_tit[:45]}' promovido para '##'")
+                else:
+                    atual["linhas"].append(linha)
+            if atual["linhas"]:
+                partes_split.append(atual)
+            expandidas.extend(partes_split)
+        novas_secoes = expandidas
+
+    # B) Anexar seções partidas ao ## imediatamente anterior (do maior índice para o menor)
+    orig_para_pos = {s["_orig_idx"]: pos for pos, s in enumerate(novas_secoes) if s["_orig_idx"] is not None}
+    for num in anexar_nums:
+        idx_cur_orig = mapa_num_para_idx[num]
+        idx_prev_orig = mapa_num_para_idx[num - 1]
+        if idx_cur_orig in indices_remover or idx_prev_orig in indices_remover:
+            continue
+        if idx_cur_orig != idx_prev_orig + 1:
+            continue
+        pos_cur = orig_para_pos.get(idx_cur_orig)
+        pos_prev = orig_para_pos.get(idx_prev_orig)
+        if pos_cur is None or pos_prev is None or pos_cur <= pos_prev:
+            continue
+        sec_cur = novas_secoes[pos_cur]
+        sec_prev = novas_secoes[pos_prev]
+        corpo_cur = _sem_rabo(sec_cur["linhas"][1:])
+        sec_prev["linhas"] = _sem_rabo(sec_prev["linhas"]) + ["", f"### {sec_cur['titulo']}", ""] + corpo_cur
+        acoes.append(f"'{sec_cur['titulo'][:40]}' anexada como '###' em '{sec_prev['titulo'][:35]}'")
+        novas_secoes.pop(pos_cur)
+        orig_para_pos = {s["_orig_idx"]: pos for pos, s in enumerate(novas_secoes) if s["_orig_idx"] is not None}
+
+    # C) Remover seções 100% comerciais
+    finais = []
+    for s in novas_secoes:
+        if s["_orig_idx"] in indices_remover:
+            acoes.append(f"seção comercial '{s['titulo'][:45]}' removida")
+            continue
+        finais.append({"titulo": s["titulo"], "linhas": s["linhas"]})
+
+    if not acoes:
+        return md, []
+
+    candidato = juntar_secoes(preambulo, finais)
+    if contar_noticias(candidato) < 1:
+        return md, []
+    return candidato, acoes
+
+
+def aplicar_dupla_verificacao(
+    md, entrada="", idioma="pt", gerar=None, extrair_data=None, reparar=None, notificar=None, revisar_estrutura=None
+):
     """Executa todas as regras sobre o Markdown final. Devolve (md_corrigido, RelatorioValidacao).
 
     - `gerar(conteudo, prompt) -> str`: função de IA para criar/recriar a enquete quando faltar (opcional).
@@ -1613,11 +1892,17 @@ def aplicar_dupla_verificacao(md, entrada="", idioma="pt", gerar=None, extrair_d
         )
         try:
             prompt_ruido = (
-                "Remova apenas as chamadas promocionais, de assinatura ou paywall residuais do Markdown abaixo "
-                "(ex.: " + ", ".join(ruidos[:3]) + "), sem apagar nenhuma notícia, dado numérico ou título ##."
+                "Remova chamadas promocionais, de assinatura, cupons ou paywall residuais do Markdown abaixo "
+                "(ex.: " + ", ".join(ruidos[:3]) + "). Se uma seção ## inteira for exclusivamente comercial, "
+                "publieditorial ou cupom de desconto sem valor jornalístico, remova essa seção comercial inteira; "
+                "preserve 100% das notícias jornalísticas legítimas, dados numéricos e demais títulos ##."
             )
             cand_ruido = _higienizar_candidato(reparar(md, prompt_ruido), idioma)
-            if cand_ruido and contar_noticias(cand_ruido) >= contar_noticias(md) and not _RE_RUIDO.search(cand_ruido):
+            if (
+                cand_ruido
+                and (contar_noticias(cand_ruido) >= 1 or contar_noticias(md) == 0)
+                and not _RE_RUIDO.search(cand_ruido)
+            ):
                 md = cand_ruido
                 n_ruido += len(ruidos)
                 amostras_ruido.extend(ruidos)
@@ -1636,6 +1921,26 @@ def aplicar_dupla_verificacao(md, entrada="", idioma="pt", gerar=None, extrair_d
         )
     else:
         registrar("Ruído (anúncio/paywall)", OK, "sem publicidade, paywall ou sumários")
+
+    # 4.5 Auditoria estrutural e comercial (2ª passagem seletiva quando houve fatiamento ou downgrade)
+    if revisar_estrutura:
+        _emitir(
+            notificar, "ia_inicio", "Revisão estrutural (2ª passagem)",
+            encontrado="edição fatiada ou com fallback de modelo",
+            acao="auditando hierarquia de seções e eventuais blocos comerciais com modelo principal...",
+            etapa="🔎 2ª passagem estrutural",
+        )
+        md_rev, acoes_est = auditar_estrutura_com_ia(md, idioma=idioma, revisar=revisar_estrutura)
+        if acoes_est:
+            md = md_rev
+            registrar(
+                "Revisão estrutural", CORRIGIDO,
+                encontrado=f"{len(acoes_est)} ajuste(s) estrutural(is)/comercial(is)",
+                corrigido=_amostra(acoes_est, 3, aspas=False),
+                usou_ia=True,
+            )
+        else:
+            registrar("Revisão estrutural", OK, "hierarquia de seções e filtro comercial consistentes")
 
     # 5. Promove ### → ## caso nenhuma seção ## de notícia exista ainda
     md, titulos_promovidos = _promover_subtitulos_se_sem_noticias(md)
@@ -1690,19 +1995,46 @@ def aplicar_dupla_verificacao(md, entrada="", idioma="pt", gerar=None, extrair_d
                 acao="restaurando trechos, pautas e números omitidos com IA...",
                 etapa=etapa_msg,
             )
-            md_rec, _, _, melhorou, det_rec, faltantes_depois = _reparar_integridade_com_ia(md, entrada, idioma, reparar)
-            if melhorou:
+            md_rec, _, _, status_rep, det_rec, faltantes_depois = _reparar_integridade_com_ia(md, entrada, idioma, reparar)
+            if status_rep == "apenas_ruido":
+                registrar("Integridade (números)", CORRIGIDO, encontrado=enc_int, corrigido=det_rec, usou_ia=True)
+            elif status_rep == "restaurado":
                 md = md_rec
                 status_int, det_int = checar_integridade(entrada, md)
                 if status_int == OK:
                     registrar("Integridade (números)", CORRIGIDO, encontrado=enc_int, corrigido=det_rec, usou_ia=True)
                 else:
-                    faltam_str = _amostra(faltantes_depois.values(), 4, aspas=False)
-                    sufixo_falt = f"; ainda faltam: {faltam_str}" if faltam_str else ""
-                    registrar(
-                        "Integridade (números)", AVISO,
-                        encontrado=f"recuperado parcialmente com IA ({det_rec}){sufixo_falt}",
+                    # Recuperação parcial: tenta mais uma passagem focada nos ausentes restantes
+                    md_rec2, _, _, status_rep2, det_rec2, faltantes_depois2 = _reparar_integridade_com_ia(
+                        md, entrada, idioma, reparar
                     )
+                    if status_rep2 == "apenas_ruido":
+                        registrar(
+                            "Integridade (números)", CORRIGIDO,
+                            encontrado=enc_int,
+                            corrigido=f"{det_rec} · {det_rec2}",
+                            usou_ia=True,
+                        )
+                    elif status_rep2 == "restaurado":
+                        md = md_rec2
+                        status_int, _ = checar_integridade(entrada, md)
+                        det_comb = f"{det_rec} · {det_rec2}"
+                        if status_int == OK:
+                            registrar("Integridade (números)", CORRIGIDO, encontrado=enc_int, corrigido=det_comb, usou_ia=True)
+                        else:
+                            faltam_str = _amostra(faltantes_depois2.values(), 4, aspas=False)
+                            sufixo_falt = f"; ainda faltam: {faltam_str}" if faltam_str else ""
+                            registrar(
+                                "Integridade (números)", AVISO,
+                                encontrado=f"recuperado parcialmente com IA ({det_comb}){sufixo_falt}",
+                            )
+                    else:
+                        faltam_str = _amostra(faltantes_depois.values(), 4, aspas=False)
+                        sufixo_falt = f"; ainda faltam: {faltam_str}" if faltam_str else ""
+                        registrar(
+                            "Integridade (números)", AVISO,
+                            encontrado=f"recuperado parcialmente com IA ({det_rec}){sufixo_falt}",
+                        )
             else:
                 registrar("Integridade (números)", AVISO, encontrado=enc_int)
         elif status_int == AVISO:
@@ -1816,8 +2148,12 @@ def aplicar_dupla_verificacao(md, entrada="", idioma="pt", gerar=None, extrair_d
         else:
             registrar(titulo_enq, AVISO, encontrado="edição sem enquete e pauta muito curta para criar uma")
 
-    # 10. Notícias extraídas + Ordem final
+    # 10. Notícias extraídas + Ordem final (garante reordenação caso alguma etapa anterior tenha mexido no fim)
     _, secoes = dividir_secoes(md)
+    if secoes and not _RE_ENQUETE.match(secoes[-1]["titulo"]) and any(_eh_enquete(s) for s in secoes):
+        md, info_re = reorganizar_bloco_final(md, idioma)
+        info["mudou_ordem"] = info["mudou_ordem"] or info_re["mudou_ordem"]
+        _, secoes = dividir_secoes(md)
     n_noticias = sum(1 for s in secoes if _eh_secao_noticia(s))
     if n_noticias:
         if titulos_promovidos:
@@ -1849,7 +2185,7 @@ def aplicar_dupla_verificacao(md, entrada="", idioma="pt", gerar=None, extrair_d
     else:
         registrar("Ordem do bloco final", AVISO, encontrado=f"última seção é '{ultima}' (esperado: {titulo_enq})")
 
-    ordem = ["Cabeçalho", "Notícias", "Integridade", "Tabelas", "Links", "Ruído", "Idioma",
+    ordem = ["Cabeçalho", "Notícias", "Integridade", "Tabelas", "Links", "Ruído", "Revisão", "Idioma",
              titulo_voz, titulo_enq, "Ordem"]
     rel.checagens.sort(key=lambda c: next((i for i, p in enumerate(ordem) if c.regra.startswith(p)), len(ordem)))
     return re.sub(r"\n{3,}", "\n\n", md).strip(), rel

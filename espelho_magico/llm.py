@@ -43,6 +43,18 @@ MIN_CHARS_PARA_DIVIDIR = 4000
 _RE_BLOCO_METADADOS = re.compile(r"^\s*(<metadados>.*?</metadados>)\s*", re.S)
 _RE_BLOCO_DOC = re.compile(r"^\s*<documento_entrada>\s*(.*?)\s*</documento_entrada>\s*$", re.S)
 _RE_LINHA_META_LEGADO = re.compile(r"^\s*(\[METADADOS DO E-MAIL[^\n]*\])\s*\n+", re.S)
+_RE_CORTE_ARTIGO_FEED = re.compile(
+    r"\n(?=## [^\n]+\n+\s*\d{1,2}/\d{1,2}/\d{4}\s*(?:[àa]s|[-–,])?\s*\d{1,2}:\d{2})",
+    re.I,
+)
+_RE_CORTE_SECAO_CAT = re.compile(r"\n(?=#{5,6}\s+\S)")
+_RE_CORTE_SECAO_H1 = re.compile(r"\n(?=#\s+\S)")
+
+
+def modelo_eh_inferior(modelo):
+    """Retorna True para modelos de fallback leves/inferiores (lite ou gemma)."""
+    low = (modelo or "").strip().lower()
+    return "lite" in low or low.startswith("gemma")
 
 
 def _desempacotar_conteudo(conteudo):
@@ -90,16 +102,31 @@ def dividir_em_duas_partes(conteudo):
         c2 = "\n\n".join(partes_ed[melhor_k:])
         return [_empacotar_conteudo(meta, c1, com_tag_doc), _empacotar_conteudo(meta, c2, com_tag_doc)]
 
-    # 2) Caso contrário, divide no marcador estrutural mais próximo do meio (## -> ### -> \n\n -> \n)
+    # 2) Prioriza fronteira de artigos datados de feeds (## Título + DD/MM/AAAA às HH:MM) para nunca cortar no meio de uma matéria
     meio = len(corpo) // 2
+    corte = None
+    ini_feed, fim_feed = int(len(corpo) * 0.15), int(len(corpo) * 0.85)
+    pos_feed = [m.start() for m in _RE_CORTE_ARTIGO_FEED.finditer(corpo) if ini_feed <= m.start() <= fim_feed]
+    if pos_feed:
+        corte = min(pos_feed, key=lambda p: abs(p - meio))
+
+    # 3) Em newsletters estruturadas por categoria (##### / ######) ou H1 (#), corta antes da próxima grande matéria
     ini_janela = int(len(corpo) * 0.2)
     fim_janela = int(len(corpo) * 0.8)
-    corte = None
-    for sep in ("\n## ", "\n### ", "\n\n", "\n"):
-        posicoes = [m.start() for m in re.finditer(re.escape(sep), corpo) if ini_janela <= m.start() <= fim_janela]
-        if posicoes:
-            corte = min(posicoes, key=lambda p: abs(p - meio))
-            break
+    if corte is None:
+        for padrao in (_RE_CORTE_SECAO_CAT, _RE_CORTE_SECAO_H1):
+            posicoes = [m.start() for m in padrao.finditer(corpo) if ini_janela <= m.start() <= fim_janela]
+            if posicoes:
+                corte = min(posicoes, key=lambda p: abs(p - meio))
+                break
+
+    # 4) Caso contrário, divide no marcador estrutural mais próximo do meio (## -> ### -> \n\n -> \n)
+    if corte is None:
+        for sep in ("\n## ", "\n### ", "\n\n", "\n"):
+            posicoes = [m.start() for m in re.finditer(re.escape(sep), corpo) if ini_janela <= m.start() <= fim_janela]
+            if posicoes:
+                corte = min(posicoes, key=lambda p: abs(p - meio))
+                break
     if corte is None:
         corte = meio
 
@@ -207,7 +234,7 @@ def unir_partes_extraidas(partes):
 
 class GerenciadorGemini:
     def __init__(self, api_keys, modelos, max_output_tokens=None, sleep=time.sleep, client_factory=None,
-                 timeout=None, clock=time.monotonic):
+                 timeout=None, clock=time.monotonic, pausa_antes_downgrade=None):
         if not api_keys:
             raise ValueError("Nenhuma GEMINI_API_KEY configurada.")
         self.timeout = timeout
@@ -220,9 +247,24 @@ class GerenciadorGemini:
         self.max_output_tokens = max_output_tokens
         self._sleep = sleep
         self._clock = clock
+        self.pausa_antes_downgrade = pausa_antes_downgrade
         self._indice = 0
         self._lock = threading.Lock()
         self._modelos_404 = set()
+        self._tls = threading.local()
+
+    def resetar_modelos_usados(self):
+        self._tls.modelos_usados = []
+
+    def obter_modelos_usados(self):
+        return list(getattr(self._tls, "modelos_usados", []))
+
+    def _registrar_modelo_usado(self, modelo):
+        usados = getattr(self._tls, "modelos_usados", None)
+        if usados is None:
+            usados = []
+            self._tls.modelos_usados = usados
+        usados.append(modelo)
 
     # -- rotação de chaves (thread-safe) --
     def _proxima_chave(self):
@@ -304,32 +346,49 @@ class GerenciadorGemini:
                 finish = resposta.candidates[0].finish_reason
             if finish == types.FinishReason.MAX_TOKENS:
                 raise RespostaTruncada(texto)
+            self._registrar_modelo_usado(modelo)
             return texto
         raise ErroTransitorio(f"Cota esgotada em todas as chaves para {modelo}.", "429")
 
-    def extrair(self, conteudo, prompt, max_rodadas=None, backoff_base=None, backoff_max=None, tempo_max=None):
+    def extrair(self, conteudo, prompt, max_rodadas=None, backoff_base=None, backoff_max=None, tempo_max=None,
+                apenas_tier_principal=False, pausa_antes_downgrade=None):
         """Percorre os modelos em ordem; se todos falharem por erro transitório, espera e repete.
 
-        Para no que vier primeiro: max_rodadas ou ~tempo_max segundos (minutos, não horas).
-        Sobrecarga (503) do Gemini costuma durar alguns minutos, então vale insistir com
-        espera crescente em vez de desistir cedo ou trocar por modelos inferiores.
+        Antes de rebaixar dos modelos principais para modelos leves (lite/gemma) por pico de 503/timeout,
+        faz uma pausa curta e tenta novamente o tier principal para evitar perda de qualidade.
         """
         max_rodadas = max_rodadas or config.MAX_RODADAS
         backoff_base = backoff_base if backoff_base is not None else config.BACKOFF_BASE
         backoff_max = backoff_max if backoff_max is not None else config.BACKOFF_MAX
         tempo_max = tempo_max if tempo_max is not None else config.IA_TEMPO_MAX
+        if pausa_antes_downgrade is None:
+            pausa_antes_downgrade = (
+                self.pausa_antes_downgrade
+                if self.pausa_antes_downgrade is not None
+                else config.PAUSA_ANTES_DOWNGRADE
+            )
+
+        modelos_ativos = (
+            [m for m in self.modelos if not modelo_eh_inferior(m)] or list(self.modelos)
+            if apenas_tier_principal
+            else list(self.modelos)
+        )
+        tier_principal = [m for m in modelos_ativos if not modelo_eh_inferior(m)]
+        tier_fallback = [m for m in modelos_ativos if modelo_eh_inferior(m)]
 
         inicio = self._clock()
         melhor_truncado = None
         motivos = set()
         rodadas_feitas = 0
-        for rodada in range(max_rodadas):
-            rodadas_feitas = rodada + 1
-            for modelo in self.modelos:
+
+        def _tentar_lista(lista_modelos):
+            nonlocal melhor_truncado
+            motivos_locais = set()
+            for modelo in lista_modelos:
                 if modelo in self._modelos_404:
                     continue
                 try:
-                    return self.gerar(conteudo, prompt, modelo)
+                    return True, self.gerar(conteudo, prompt, modelo), motivos_locais
                 except RespostaTruncada as e:
                     if len(conteudo) >= MIN_CHARS_PARA_DIVIDIR:
                         metades = dividir_em_duas_partes(conteudo)
@@ -338,13 +397,21 @@ class GerenciadorGemini:
                                 f"[yellow]  ⚠ {modelo} atingiu MAX_TOKENS em entrada longa ({len(conteudo):,} chars). "
                                 f"Dividindo em 2 partes para manter o modelo principal...[/yellow]"
                             )
-                            r1 = self.extrair(metades[0], prompt, max_rodadas, backoff_base, backoff_max, tempo_max)
-                            r2 = self.extrair(metades[1], prompt, max_rodadas, backoff_base, backoff_max, tempo_max)
-                            return unir_partes_extraidas([r1, r2])
+                            r1 = self.extrair(
+                                metades[0], prompt, max_rodadas, backoff_base, backoff_max, tempo_max,
+                                apenas_tier_principal=apenas_tier_principal,
+                                pausa_antes_downgrade=pausa_antes_downgrade,
+                            )
+                            r2 = self.extrair(
+                                metades[1], prompt, max_rodadas, backoff_base, backoff_max, tempo_max,
+                                apenas_tier_principal=apenas_tier_principal,
+                                pausa_antes_downgrade=pausa_antes_downgrade,
+                            )
+                            return True, unir_partes_extraidas([r1, r2]), motivos_locais
                     logger.warning(f"[yellow]  ⚠ {modelo} atingiu o limite de tokens (resposta incompleta). Tentando outro modelo...[/yellow]")
                     if melhor_truncado is None or len(e.texto) > len(melhor_truncado):
                         melhor_truncado = e.texto
-                    motivos.add("truncado")
+                    motivos_locais.add("truncado")
                 except ModeloIndisponivel as e:
                     logger.warning(f"[yellow]  ⚠ {escape(str(e))} Ignorando este modelo nesta execução.[/yellow]")
                 except ErroTransitorio as e:
@@ -355,19 +422,68 @@ class GerenciadorGemini:
                                 f"[yellow]  ⚠ {escape(str(e))} Dividindo entrada ({len(conteudo):,} chars) "
                                 f"em 2 partes menores para processar sem downgradar o modelo...[/yellow]"
                             )
-                            r1 = self.extrair(metades[0], prompt, max_rodadas, backoff_base, backoff_max, tempo_max)
-                            r2 = self.extrair(metades[1], prompt, max_rodadas, backoff_base, backoff_max, tempo_max)
-                            return unir_partes_extraidas([r1, r2])
-                    motivos.add(e.motivo)
+                            r1 = self.extrair(
+                                metades[0], prompt, max_rodadas, backoff_base, backoff_max, tempo_max,
+                                apenas_tier_principal=apenas_tier_principal,
+                                pausa_antes_downgrade=pausa_antes_downgrade,
+                            )
+                            r2 = self.extrair(
+                                metades[1], prompt, max_rodadas, backoff_base, backoff_max, tempo_max,
+                                apenas_tier_principal=apenas_tier_principal,
+                                pausa_antes_downgrade=pausa_antes_downgrade,
+                            )
+                            return True, unir_partes_extraidas([r1, r2]), motivos_locais
+                    motivos_locais.add(e.motivo)
                     logger.warning(f"[yellow]  ⚠ {escape(str(e))} Tentando próximo modelo...[/yellow]")
                 except Exception as e:
-                    motivos.add("outro")
+                    motivos_locais.add("outro")
                     logger.warning(f"[yellow]  ⚠ Erro inesperado com {modelo}: {escape(str(e))}. Tentando próximo modelo...[/yellow]")
+            return False, None, motivos_locais
+
+        for rodada in range(max_rodadas):
+            rodadas_feitas = rodada + 1
+            if tier_principal and tier_fallback:
+                ok, res, mot_t1 = _tentar_lista(tier_principal)
+                if ok:
+                    return res
+                motivos.update(mot_t1)
+
+                # Se os modelos principais falharam por instabilidade transitória (503/timeout/rede/vazio),
+                # espera brevemente e tenta o tier principal mais uma vez antes de cair para lite/gemma.
+                tem_t1_disponivel = any(m not in self._modelos_404 for m in tier_principal)
+                instabilidade_t1 = bool(mot_t1 & {"503", "504", "timeout", "rede", "vazio"})
+                if tem_t1_disponivel and instabilidade_t1 and pausa_antes_downgrade and pausa_antes_downgrade > 0:
+                    espera_t1 = float(pausa_antes_downgrade)
+                    pode_esperar = True
+                    if tempo_max:
+                        restante = tempo_max - (self._clock() - inicio)
+                        if restante <= espera_t1:
+                            pode_esperar = False
+                    if pode_esperar:
+                        logger.warning(
+                            f"[yellow]  ⏳ Modelos principais instáveis ({', '.join(sorted(mot_t1))}). "
+                            f"Aguardando {espera_t1:.0f}s para nova tentativa antes de baixar para modelos lite...[/yellow]"
+                        )
+                        self._sleep(espera_t1)
+                        ok, res, mot_t1_retry = _tentar_lista(tier_principal)
+                        if ok:
+                            return res
+                        motivos.update(mot_t1_retry)
+
+                ok, res, mot_fb = _tentar_lista(tier_fallback)
+                if ok:
+                    return res
+                motivos.update(mot_fb)
+            else:
+                ok, res, mot_all = _tentar_lista(modelos_ativos)
+                if ok:
+                    return res
+                motivos.update(mot_all)
 
             if melhor_truncado is not None:
                 logger.warning("[yellow]⚠ Usando a resposta mais longa disponível, que está incompleta.[/yellow]")
                 return melhor_truncado
-            if all(m in self._modelos_404 for m in self.modelos):
+            if all(m in self._modelos_404 for m in modelos_ativos):
                 break
             if rodada < max_rodadas - 1:
                 espera = min(backoff_base * (2 ** rodada), backoff_max) + random.uniform(0, 5)
@@ -582,20 +698,39 @@ class Extrator:
         )
         self._gemini_esgotado = False
 
-    def extrair(self, conteudo, prompt):
+    def resetar_modelos_usados(self):
+        if hasattr(self.gemini, "resetar_modelos_usados"):
+            self.gemini.resetar_modelos_usados()
+
+    def obter_modelos_usados(self):
+        if hasattr(self.gemini, "obter_modelos_usados"):
+            return self.gemini.obter_modelos_usados()
+        return []
+
+    def extrair(self, conteudo, prompt, apenas_tier_principal=False):
         if self.ia_padrao == "alt" or (self._gemini_esgotado and self.alternativo):
             try:
                 return self.alternativo.gerar(conteudo, prompt)
             except FalhaExtracao as e:
+                if apenas_tier_principal:
+                    raise
                 logger.warning(f"[yellow]⚠ {escape(str(e))} Usando Gemini como fallback...[/yellow]")
         if self.ia_padrao == "perplexity":
             try:
                 return extrair_com_perplexity(conteudo, prompt)
             except Exception as e:
+                if apenas_tier_principal:
+                    raise FalhaExtracao(str(e))
                 logger.warning(f"[yellow]⚠ Erro no Perplexity: {escape(str(e))}. Usando Gemini como fallback...[/yellow]")
         try:
+            if apenas_tier_principal:
+                return self.gemini.extrair(
+                    conteudo, prompt, max_rodadas=2, tempo_max=120, apenas_tier_principal=True,
+                )
             return self.gemini.extrair(conteudo, prompt)
         except FalhaExtracao as falha:
+            if apenas_tier_principal:
+                raise
             # Gemini fora do ar (503 em todos os modelos): sai do Google em vez de desistir
             if self.alternativo and config.FALLBACK_ALT and self.ia_padrao != "alt":
                 logger.warning(f"[yellow]⚠ {escape(str(falha))} Tentando {self.alternativo.nome}...[/yellow]")

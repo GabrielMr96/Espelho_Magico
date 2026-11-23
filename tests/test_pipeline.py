@@ -658,6 +658,125 @@ def test_thenews_fallback_url_direta_quando_arquivo_desatualizado(tmp_path):
     assert any(h.get("Cache-Control") == "no-cache" for h in cabecalhos_vistos)
 
 
+def test_consolidacao_nao_funde_fincher_com_charlie_cox_e_remove_rodape_seo_curto():
+    from espelho_magico.pipeline import consolidar_secoes_mesmo_assunto_detalhado
+
+    md = (
+        "# 23 de novembro de 2026\n\n"
+        "## David Fincher exalta James Gunn e revela convite para filme do Batman nos anos 90\n\n"
+        "David Fincher contou que apresentou uma proposta sombria para o Batman nos anos 90, "
+        "enquanto o universo paralelo de Matt Reeves conta com Robert Pattinson no papel central.\n\n"
+        "## Charlie Cox revela ter sido barrado nos testes para James Bond por idade\n\n"
+        "Charlie Cox contou que foi considerado velho demais para 007; a Amazon MGM escolheu "
+        "Robert Pattinson, atual intérprete do Batman, para estrelar Bond 26.\n\n"
+        "## GTA VI: Fãs encontram Pennywise no jogo\n\n"
+        "Jogadores encontraram uma referência a Pennywise em um elevador cheio de balões.\n\n"
+        "GTA VI encerrou um hiato de treze anos da franquia.\n\n"
+        "GTA VI está disponível para PS5 e Xbox Series X|S.\n\n"
+        "## GTA VI: Como encontrar o carro de Toretto\n\n"
+        "O Dodge Charger R/T 1970 pode ser encontrado atrás da casa de Sid Thompson em Grayson.\n\n"
+        "GTA VI encerrou um hiato de treze anos da franquia.\n\n"
+        "GTA VI está disponível para PlayStation 5 e Xbox Series X/S.\n"
+    )
+    sanitizado = sanitizar_markdown_final(md, consolidar=False)
+    consolidado, info = consolidar_secoes_mesmo_assunto_detalhado(sanitizado)
+    assert info["secoes_concatenadas"] == []
+    assert "## David Fincher exalta James Gunn" in consolidado
+    assert "## Charlie Cox revela ter sido barrado" in consolidado
+    # Rodapés curtos repetidos mantidos apenas na primeira ocorrência
+    assert consolidado.count("encerrou um hiato de treze anos") == 1
+    assert consolidado.lower().count("está disponível para") == 1
+
+
+def test_pipeline_segunda_passagem_reextrai_parte_rebaixada_e_audita_estrutura(tmp_path, monkeypatch):
+    from espelho_magico import config
+
+    monkeypatch.setattr(config, "MAX_CHARS_POR_CHAMADA", 1000)
+    monkeypatch.setattr(config, "DUPLA_PASSAGEM_REVISAO", True)
+
+    class ExtratorComDowngrade:
+        def __init__(self):
+            self.chamadas = []
+            self._ultimos = []
+
+        def resetar_modelos_usados(self):
+            self._ultimos = []
+
+        def obter_modelos_usados(self):
+            return list(self._ultimos)
+
+        def extrair(self, conteudo, prompt, apenas_tier_principal=False):
+            self.chamadas.append((apenas_tier_principal, prompt[:60]))
+            # 1ª chamada (parte 1): cai em modelo lite e vaza anúncio da NordVPN
+            if len(self.chamadas) == 1:
+                self._ultimos = ["gemini-flash-lite-latest"]
+                return (
+                    "# 23 de novembro de 2026\n\n"
+                    "## Cupom NordVPN com desconto\n\n"
+                    "Assine a NordVPN com 75% de desconto na Black Friday.\n"
+                )
+            # 2ª chamada (parte 2): modelo principal extrai notícia real com subtítulo separado
+            if len(self.chamadas) == 2:
+                self._ultimos = ["gemini-3.6-flash"]
+                return (
+                    "# 23 de novembro de 2026\n\n"
+                    "## Galaxy S27 Ultra ganha modo de envio seguro\n\n"
+                    "A Samsung testa recurso que limita a bateria de 5.534 mAh a 80% por 14 dias antes do envio à assistência técnica.\n\n"
+                    "## Detalhes do envio seguro no aparelho\n\n"
+                    "O ajuste preserva as configurações anteriores do usuário quando desativado após o retorno do reparo.\n"
+                )
+            # 3ª chamada: 2ª passagem da parte 1 (apenas_tier_principal=True) descarta o anúncio!
+            if "segunda_passagem_revisao" in prompt:
+                assert apenas_tier_principal is True
+                self._ultimos = ["gemini-3.6-flash"]
+                return "[SEM_CONTEUDO_EDITORIAL]"
+            # 4ª chamada: auditoria estrutural compacta em JSON anexa a seção 2 na seção 1
+            if "revisor estrutural" in prompt.lower():
+                assert apenas_tier_principal is True
+                self._ultimos = ["gemini-3.6-flash"]
+                return '{"anexar_ao_anterior": [2], "remover_secoes_comerciais": [], "promover_subtitulos": []}'
+            # 5ª chamada: criação de Enquete do Dia
+            self._ultimos = ["gemini-3.6-flash"]
+            return "## Enquete do Dia\n\nVocê confia em enviar celular pelos Correios?\n\n- Sim\n- Nunca\n- Só com seguro\n- Levo pessoalmente"
+
+    extrator = ExtratorComDowngrade()
+    pipe = Pipeline(Opcoes(dry_run=True, max_workers=1), extrator=extrator, drive_service=None, gmail_service=None)
+    pipe.pasta_saida = tmp_path
+
+    html_grande = (
+        "<h2>Cupom NordVPN: como assinar a melhor VPN com até 75% de desconto</h2>"
+        "<p>23/11/2026 às 08:30</p>"
+        "<p>" + ("Oferta promocional da Black Friday com cupom de desconto especial. " * 10) + "</p>"
+        "<h2>Galaxy S27 Ultra ganha modo de envio seguro</h2>"
+        "<p>23/11/2026 às 13:47</p>"
+        "<p>A Samsung testa recurso que limita a bateria de 5.534 mAh a 80% por 14 dias. "
+        + ("Detalhes técnicos da bateria e envio à assistência. " * 10) + "</p>"
+    )
+    cfg = ConfigGrupo(
+        chave="notícias de segurança",
+        emails=[{
+            "id": None,
+            "assunto": "Notícias de Segurança - 23/11",
+            "remetente": "feed@local",
+            "data": "Mon, 23 Nov 2026 18:00:00 +0000",
+            "conteudo_html": html_grande,
+            "eh_html": True,
+        }],
+        titulo_base="Hackeando o Problema",
+        nome_final="Hackeando o Problema #215.md",
+    )
+    resultados = pipe.executar([cfg])
+    assert resultados[0].status == "dry"
+    gerado = (tmp_path / "Hackeando o Problema #215.md").read_text(encoding="utf-8")
+    assert "NordVPN" not in gerado
+    assert "## Galaxy S27 Ultra ganha modo de envio seguro" in gerado
+    assert "\n### Detalhes do envio seguro no aparelho" in gerado
+    assert "\n## Detalhes do envio seguro no aparelho" not in gerado
+    assert "## Enquete do Dia" in gerado
+    assert not resultados[0].tem_aviso
+
+
+
 
 
 

@@ -10,12 +10,13 @@ Automação que lê newsletters do Gmail (marcador `Espelho_Magico`), arranca o 
    - Também permite extração avulsa diretamente via `--url <link>`.
 2. **Agrupamento Inteligente**: Agrupa mensagens por newsletter (mapeamento em `config.json`), detecta o histórico e calcula a numeração da próxima edição automaticamente.
 3. **Pré-limpeza HTML → Markdown**: Converte tabelas de layout para blocos enxutos, preserva linhas de tabelas de dados (cotações/mercados), remove menus/rodapés web (`<nav>`, `<footer>`, `<aside>`), blocos de "Leia mais sobre..." e créditos fotográficos puros (`Manoella Mello | Globo`, `Fortune | Getty Images`), economizando até 90% dos tokens antes do envio à IA.
-4. **Extração Literal com IA (Fatiamento Anti-504 e Anti-413)**:
-   - Extrai o conteúdo sem resumir ou parafrasear usando o Gemini (`gemini-4-hydrogen` como prioridade no tier gratuito, com rotação de chaves e fallback para provedor alternativo `ALT_*` ou Perplexity com busca web desativada).
-   - Entradas extensas (como unificações de múltiplos e-mails) são fatiadas preventivamente por fronteiras de seção (`MAX_CHARS_POR_CHAMADA`) e contam com auto-divisão binária reativa em caso de `504` (timeout) ou `413` (limite de TPM), mantendo o modelo principal sem downgrade.
+4. **Extração Literal com IA (Fatiamento Inteligente + Segunda Passagem Seletiva)**:
+   - Extrai o conteúdo sem resumir ou parafrasear usando o Gemini (`gemini-4-hydrogen` como prioridade no tier gratuito, com rotação de chaves, pausa curta de retentativa no tier principal `PAUSA_ANTES_DOWNGRADE` antes de cair para modelos `lite`/`gemma` em picos de `503`, e fallback para provedor alternativo `ALT_*` ou Perplexity com busca web desativada).
+   - Entradas extensas (como unificações de múltiplos e-mails) são fatiadas preventivamente priorizando fronteiras de artigos datados de feed e categorias de newsletter (`MAX_CHARS_POR_CHAMADA`), com auto-divisão binária reativa em caso de `504` (timeout) ou `413` (limite de TPM).
+   - Quando alguma parte precisa cair para modelo `lite`/`gemma`, a segunda passagem seletiva (`DUPLA_PASSAGEM_REVISAO`) reextrai apenas essa parte com o tier principal assim que a API estabiliza.
 5. **Placares Esportivos**: No *Gol Contra*, injeta automaticamente os placares do dia anterior via API pública da ESPN logo abaixo do cabeçalho `# Data`, filtrando por ligas de elite e clubes de destaque.
 6. **Dupla Verificação e Formatação para NotebookLM (Áudio/Podcast)**:
-   - Valida 10 regras pós-extração com relatório visual por programa: cabeçalho `# Programa #Edição — Data`, contagem de notícias, integridade dos números da fonte, conversão automática de tabelas cruas para tópicos narrativos de áudio, remoção de links/imagens crus, ausência de ruído/paywall, consistência de idioma e adaptação de *leitores* → *ouvintes*;
+   - Valida as regras pós-extração com relatório visual por programa: cabeçalho `# Programa #Edição — Data`, contagem de notícias, integridade dos números/pautas da fonte (com recuperação incremental em documentos longos e confirmação automática `[APENAS_RUIDO_DESCARTADO]` para descartes comerciais legítimos), conversão de tabelas cruas para tópicos narrativos de áudio, remoção de links/imagens crus e cupons/anúncios, auditoria estrutural compacta em JSON pós-fatiamento, consistência de idioma e adaptação de *leitores* → *ouvintes*;
    - Reordena o bloco final para sempre terminar em `## Voz dos Ouvintes` (quando houver) e `## Enquete do Dia` / `## Daily Poll` (criada automaticamente pela IA quando a fonte não tiver enquete);
    - Remove cercas ```` ```markdown ```` externas, pontuações terminais (`?`, `!`, `.`, `:`) dos títulos `##` e deduplica seções repetidas por escopo.
 7. **Publicação**: Salva em `resultados_markdown/`, envia/atualiza no Google Drive e marca os e-mails como lidos no Gmail.
@@ -51,7 +52,7 @@ Automação que lê newsletters do Gmail (marcador `Espelho_Magico`), arranca o 
 | Onde | O quê |
 | --- | --- |
 | `config.json` | Mapeamento de prefixos → títulos, arquivos públicos para dupla verificação (`fontes_web`), diretrizes específicas por fonte (`dicas_por_prefixo`), idioma (`prefixos_ingles`), deduplicação por título + data/hora (`prefixos_deduplicar_noticias`), ordem de modelos Gemini e filtros de ligas/clubes |
-| `.env` | Chaves de API (`GEMINI_API_KEY`, `ALT_*`, `PERPLEXITY_API_KEY`), `IA_PADRAO`, retentativas (`MAX_RODADAS`, `BACKOFF_*`), tamanho máximo por chamada (`MAX_CHARS_POR_CHAMADA`), verificação web (`VERIFICAR_FONTES_WEB`), workers paralelos (`MAX_WORKERS`), IDs de pasta do Drive, label do Gmail |
+| `.env` | Chaves de API (`GEMINI_API_KEY`, `ALT_*`, `PERPLEXITY_API_KEY`), `IA_PADRAO`, retentativas (`MAX_RODADAS`, `BACKOFF_*`, `PAUSA_ANTES_DOWNGRADE`), segunda passagem (`DUPLA_PASSAGEM_REVISAO`), tamanho máximo por chamada (`MAX_CHARS_POR_CHAMADA`), verificação web (`VERIFICAR_FONTES_WEB`), workers paralelos (`MAX_WORKERS`), IDs de pasta do Drive, label do Gmail |
 | `espelho_magico/prompts/` | Diretrizes de extração literal, tratamento de imagens/tabelas/quizzes para áudio e modo unificação |
 | `prompts_notebooklm/` | Prompts universais prontos para copiar e colar no Google NotebookLM (Português e Inglês) |
 
