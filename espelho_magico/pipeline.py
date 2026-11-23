@@ -1043,6 +1043,7 @@ def consolidar_secoes_mesmo_assunto_detalhado(texto):
         c_nov = _palavras_topico(corpo_nov_txt)
 
         idx_alvo = None
+        melhor_score = None
         if corpo_nov_txt:
             for k, meta in enumerate(meta_norm):
                 if meta is None:
@@ -1057,8 +1058,10 @@ def consolidar_secoes_mesmo_assunto_detalhado(texto):
                 if (len(comum_tit) >= 2 and len(comum_total) >= 5) or (
                     len(comum_tit) >= 1 and len(comum_corpo) >= 6 and ratio_corpo >= 0.45
                 ):
-                    idx_alvo = k
-                    break
+                    score = (len(comum_corpo), len(comum_total), k)
+                    if melhor_score is None or score > melhor_score:
+                        melhor_score = score
+                        idx_alvo = k
 
         if idx_alvo is None:
             consolidadas.append(s)

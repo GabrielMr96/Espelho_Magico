@@ -776,6 +776,30 @@ def test_pipeline_segunda_passagem_reextrai_parte_rebaixada_e_audita_estrutura(t
     assert not resultados[0].tem_aviso
 
 
+def test_consolidacao_anexa_na_secao_mais_relevante_e_nao_na_primeira_introducao():
+    from espelho_magico.pipeline import consolidar_secoes_mesmo_assunto_detalhado
+
+    md = (
+        "# 23 de novembro de 2026\n\n"
+        "## O perigo da concordância e falta de conflitos produtivos\n\n"
+        "Em reuniões corporativas, profissionais preferem o silêncio para evitar conflitos produtivos desnecessários.\n\n"
+        "## Exercício de reflexão com Inteligência Artificial\n\n"
+        "Um prompt semanal ajuda a refletir sobre padrões de carreira usando memória da IA.\n\n"
+        "## Por que o excesso de cordialidade impede conflitos produtivos na liderança\n\n"
+        "Rebecca Newton, psicóloga organizacional, explica como equipes executivas evitam decisões difíceis e apresenta "
+        "quatro práticas para estimular conflitos produtivos, confiança interpessoal e discussões saudáveis.\n\n"
+        "## Práticas para tornar reuniões e conflitos produtivos melhores\n\n"
+        "Rebecca recomenda substituir atualizações por perguntas nas reuniões das equipes executivas, desenvolver "
+        "confiança interpessoal e estimular discussões saudáveis sobre decisões difíceis.\n"
+    )
+    out, info = consolidar_secoes_mesmo_assunto_detalhado(md)
+    assert len(info["secoes_concatenadas"]) == 1
+    assert "excesso de cordialidade" in info["secoes_concatenadas"][0].lower()
+    # A continuação das práticas deve aparecer DEPOIS do exercício de IA e junto de Rebecca Newton
+    assert out.index("## Exercício de reflexão") < out.index("## Por que o excesso de cordialidade") < out.index("### Práticas para tornar reuniões")
+
+
+
 
 
 

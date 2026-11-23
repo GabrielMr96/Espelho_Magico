@@ -146,6 +146,7 @@ _RE_RUIDO_LINHA = re.compile(
     r"(?:Resposta|Answer)\s*:\*{0,2}\s*(?:A\s+resposta\s+oficial\s+n[aã]o\s+consta|The\s+official\s+answer\s+is\s+not\s+included)\b[^\n]*)|"
     r"Quer\s+fazer\s+sua\s+marca\b.*\bAnuncie\b)|"
     r".*?(?:\b\d{5}-\d{3}\b(?:,\s*(?:Brazil|Brasil))?\s*$|"
+    r"\b\d{1,5}\s+[A-ZÀ-ÿ][^\n]{2,60}\b(?:Ave|St|Street|Blvd|Rd|Road)\b[^\n]*\b(?:United\s+States|USA|Canada)\b\s*$|"
     r"concorrer\s+a\s+(?:um|uma)\s+\*{0,2}iPhone\b|"
     r"indicando\b.*?\b(?:para\s+receber\s+o\s+\*{0,2}the\s+news\*{0,2}|\*{0,2}Streak\*{0,2})|"
     r"(?:registrando|batendo|bater)\s+(?:o\s+|seu\s+)\*{0,2}Streak\*{0,2}\b|"
@@ -754,7 +755,10 @@ def enquete_de_fallback(md, idioma="pt"):
 # --- Verificações e correção automática --------------------------------------
 
 _RE_BLOCO_PATROCINADO_FONTE = re.compile(
-    r"^#{1,5}[ \t]*(?:DROPPED[ \t]+BY|SPONSORED[ \t]+BY|CAMPANHA[ \t]+FOMO[ \t]+ZERO|COLLAB[ \t]+COM\b)\b.*?(?=\n#{5}[ \t]+\S|\Z)",
+    r"^(?:(?:#{1,6}[ \t]*)?\*{0,2}(?:DROPPED[ \t]+BY|SPONSORED[ \t]+BY|APRESENTADO[ \t]+POR|OFERECIMENTO|"
+    r"CAMPANHA[ \t]+FOMO[ \t]+ZERO|COLLAB[ \t]+COM\b)[^\n]*\n+)"
+    r"(?:(?:#{1,2}[ \t]+[^\n]+\n+))?"
+    r".*?(?=\n#{1,6}[ \t]+\S|\n\*\*(?:HEADLINES|QUICK[ \t]+TAKES|AGENDA|GR[ÁA]FICO)\*\*|\Z)",
     re.S | re.I | re.M,
 )
 _RE_CARD_CUPOM_FONTE = re.compile(
@@ -1475,7 +1479,7 @@ def _reparar_integridade_com_ia(md, entrada, idioma, reparar):
     - `"apenas_ruido"`: a IA confirmou que todos os trechos ausentes eram apenas publicidade/ruído descartado;
     - `"sem_mudanca"`: não foi possível melhorar nem confirmar descarte seguro.
     """
-    pct_antes, _, faltantes, _, entrada_limpa = _analisar_integridade(entrada, md)
+    pct_antes, _, faltantes, proporcao_antes, entrada_limpa = _analisar_integridade(entrada, md)
     pct_pautas_antes, pautas_verif, pautas_omitidas = checar_cobertura_pautas(entrada, md)
     pautas_relevantes = (
         pautas_omitidas if (len(pautas_verif) >= 3 and pct_pautas_antes < 80 and len(pautas_omitidas) >= 2) else []
@@ -1530,8 +1534,9 @@ def _reparar_integridade_com_ia(md, entrada, idioma, reparar):
 
     motivo_ruido = _extrair_motivo_apenas_ruido(resposta)
     if motivo_ruido is not None:
-        pauta_ok = len(pautas_verif) < 3 or pct_pautas_antes >= 50
-        if contar_noticias(md) >= 1 and pct_antes >= 50 and pauta_ok:
+        pauta_ok = len(pautas_verif) < 3 or pct_pautas_antes >= 70
+        cobertura_editorial_ok = pct_antes >= 50 or (proporcao_antes >= 40 and pauta_ok)
+        if contar_noticias(md) >= 1 and cobertura_editorial_ok and pauta_ok:
             det_ruido = (
                 f"confirmado pela IA que os ausentes eram apenas publicidade/ruído descartado ({motivo_ruido})"
                 if motivo_ruido

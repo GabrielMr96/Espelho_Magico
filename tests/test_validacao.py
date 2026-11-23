@@ -932,6 +932,54 @@ def test_reparo_idioma_em_doc_longo_aceita_titulo_traduzido():
     assert not rel.tem_aviso
 
 
+def test_integridade_ignora_apresentado_por_com_h6_e_endereco_beehiiv_e_aceita_ruido_em_texto_com_poucos_numeros():
+    entrada = (
+        "###### **APRESENTADO POR S1NC**\n\n"
+        "# Se você pudesse mudar algo na sua vida financeira?\n\n"
+        "Na Black Friday, o S1NC está com 50% OFF no anual e 30% OFF no mensal, a partir de R$ 19,50/mês.\n\n"
+        "# Sua equipe pode estar concordando demais\n\n"
+        "Rebecca Newton, psicóloga organizacional que trabalha há 25 anos assessorando lideranças, "
+        "defende a importância dos conflitos produtivos nas reuniões executivas.\n\n"
+        "228 Park Ave S, #29976, New York, New York 10003, United States\n"
+    )
+    md = (
+        "# 23 de novembro de 2026\n\n"
+        "## Por que o excesso de cordialidade prejudica as equipes\n\n"
+        "Rebecca Newton, psicóloga organizacional que trabalha há 25 anos assessorando lideranças, "
+        "defende a importância dos conflitos produtivos nas reuniões executivas.\n\n"
+        "## Enquete do Dia\n\nConcordar sempre ajuda?\n\n- Sim\n- Não\n- Depende\n- Nunca\n"
+    )
+    # 1) Sem nem precisar de IA: bloco APRESENTADO POR S1NC e endereço NY são filtrados na integridade
+    _, rel = aplicar_dupla_verificacao(md, entrada=entrada, idioma="pt", extrair_data=extrair_data_de_texto)
+    assert _status(rel, "Integridade") == OK
+    assert not rel.tem_aviso
+
+    # 2) Mesmo quando um bloco comercial sem cabeçalho padrão gerar poucos números restantes (pct < 50%),
+    # se a proporção textual e cobertura de pautas estiverem altas, [APENAS_RUIDO_DESCARTADO] resolve o aviso.
+    entrada_sem_tag = (
+        "Promoção relâmpago do parceiro com 50% OFF no anual, 30% no mensal, R$ 19,50, código 228, lote 29976 e 10003.\n\n"
+        + ("Rebecca Newton, psicóloga organizacional que trabalha há 25 anos assessorando lideranças, "
+           "explica como conflitos produtivos evitam a paz passiva nas reuniões executivas. " * 6)
+    )
+    md_fiel = (
+        "# 23 de novembro de 2026\n\n"
+        "## Conflitos produtivos na liderança\n\n"
+        + ("Rebecca Newton, psicóloga organizacional que trabalha há 25 anos assessorando lideranças, "
+           "explica como conflitos produtivos evitam a paz passiva nas reuniões executivas. " * 6)
+        + "\n\n## Enquete do Dia\n\nConcordar sempre ajuda?\n\n- Sim\n- Não\n- Depende\n- Nunca\n"
+    )
+    _, rel2 = aplicar_dupla_verificacao(
+        md_fiel,
+        entrada=entrada_sem_tag,
+        idioma="pt",
+        extrair_data=extrair_data_de_texto,
+        reparar=lambda _c, _p: "[APENAS_RUIDO_DESCARTADO] Promoção comercial de parceiro sem valor editorial",
+    )
+    assert _status(rel2, "Integridade") == CORRIGIDO
+    assert not rel2.tem_aviso
+
+
+
 
 
 
