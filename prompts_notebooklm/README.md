@@ -1,6 +1,6 @@
-# Prompts para Geração de Podcasts (Google NotebookLM)
+# Prompts para Geração de Podcasts e Vídeos Curtos (Google NotebookLM)
 
-Esta pasta reúne os prompts oficiais e otimizados para gerar os episódios da rede **Central do Caos** no **Google NotebookLM** (Audio Overview) a partir dos arquivos `.md` extraídos pelo **Espelho Mágico**.
+Esta pasta reúne os prompts oficiais e otimizados para gerar os episódios completos (**Audio Overview**) e os cortes verticais de divulgação (**Video Overview**) da rede **Central do Caos** no **Google NotebookLM** a partir dos arquivos `.md` extraídos pelo **Espelho Mágico**.
 
 ## Como funciona
 
@@ -11,14 +11,16 @@ Todos os arquivos `.md` gerados pelo **Espelho Mágico** trazem automaticamente 
 # The Out of Order Dispatch #67 — November 11, 2026
 ```
 
-Graças a isso, **você não precisa editar o nome do programa nem o número da edição no prompt a cada episódio**: basta copiar e colar o prompt correspondente ao idioma do programa.
+Graças a isso, **você não precisa editar o nome do programa nem o número da edição no prompt a cada episódio**: basta copiar e colar o prompt correspondente ao formato e idioma do programa.
 
 ## Arquivos disponíveis
 
-| Arquivo | Programas atendidos |
-| :--- | :--- |
-| [`podcast_pt_br_universal.md`](./podcast_pt_br_universal.md) | **Todos os programas em Português:**<br>• *Boletim Fora de Ordem*<br>• *Fechamento de Caixa*<br>• *Diagnóstico Sincero*<br>• *Gol Contra*<br>• *Ata de Reunião*<br>• *Alucinação Sintética*<br>• *Hackeando o Problema*<br>• *Pipoca Vencida*<br>• *Controle Quebrado* |
-| [`podcast_en_the_out_of_order_dispatch.md`](./podcast_en_the_out_of_order_dispatch.md) | **Programa em Inglês:**<br>• *The Out of Order Dispatch* |
+| Arquivo | Formato | Programas atendidos |
+| :--- | :--- | :--- |
+| [`podcast_pt_br_universal.md`](./podcast_pt_br_universal.md) | **Áudio completo** (Audio Overview) | **Todos os programas em Português:**<br>• *Boletim Fora de Ordem*<br>• *Fechamento de Caixa*<br>• *Diagnóstico Sincero*<br>• *Gol Contra*<br>• *Ata de Reunião*<br>• *Alucinação Sintética*<br>• *Hackeando o Problema*<br>• *Pipoca Vencida*<br>• *Controle Quebrado* |
+| [`podcast_en_the_out_of_order_dispatch.md`](./podcast_en_the_out_of_order_dispatch.md) | **Áudio completo** (Audio Overview) | **Programa em Inglês:**<br>• *The Out of Order Dispatch* |
+| [`video_curto_pt_br_universal.md`](./video_curto_pt_br_universal.md) | **Vídeo curto ~1 min vertical 9:16** (Video Overview — Instagram Stories e Status do WhatsApp) | **Todos os programas em Português** (narração feminina única com chamada dinâmica para o episódio completo) |
+| [`legenda_instagram_pt_br_universal.md`](./legenda_instagram_pt_br_universal.md) | **Legenda para Instagram Reels** (Chat do NotebookLM) | **Todos os programas em Português** (copy pronta anti-shadowban, polarização adaptada ao tema e 4 hashtags) |
 
 ## Duração recomendada no NotebookLM
 
