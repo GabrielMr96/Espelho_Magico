@@ -979,6 +979,27 @@ def test_integridade_ignora_apresentado_por_com_h6_e_endereco_beehiiv_e_aceita_r
     assert not rel2.tem_aviso
 
 
+def test_reorganizar_move_abertura_drops_para_topo_e_agenda_para_fim():
+    md = (
+        "# 24 de novembro de 2026\n\n"
+        "## Matéria Principal\n\nTexto da matéria principal.\n\n"
+        "## Agenda da Semana\n\n- Quarta: PIB (EUA).\n\n"
+        "## Pensei no chuveiro\n\nA meta fiscal é a régua do orçamento.\n\n"
+        "## Segunda Matéria\n\nMais fatos relevantes.\n\n"
+        "## Enquete do Dia\n\nQuem leva?\n\n- A\n- B\n- C\n- D\n"
+    )
+    out, info = reorganizar_bloco_final(md, idioma="pt")
+    assert info["mudou_ordem"] is True
+    assert (
+        out.index("## Pensei no chuveiro")
+        < out.index("## Matéria Principal")
+        < out.index("## Segunda Matéria")
+        < out.index("## Agenda da Semana")
+        < out.index("## Enquete do Dia")
+    )
+
+
+
 
 
 

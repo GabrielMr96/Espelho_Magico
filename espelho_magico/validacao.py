@@ -522,8 +522,12 @@ def _adaptar_ouvintes(linhas, idioma):
     return novas, trocas, exemplos
 
 
+_RE_ABERTURA_DROPS = re.compile(r"^(?:hoje\s+eu\s+aprendi|pensei\s+no\s+chuveiro)\b", re.I)
+_RE_AGENDA = re.compile(r"^agenda(?:\s+(?:da\s+semana|do\s+dia|esportiva|econ[ôo]mica))?$", re.I)
+
+
 def reorganizar_bloco_final(md, idioma="pt"):
-    """Garante a ordem notícias → Voz dos Ouvintes → Enquete do Dia e padroniza os títulos.
+    """Garante a ordem aberturas Drops → notícias → Agenda → Voz dos Ouvintes → Enquete do Dia e padroniza os títulos.
 
     Devolve (md, info) com: mudou_ordem, voz (qtde de seções unificadas), trocas_ouvintes,
     enquete_renomeada, opcoes_enquete, perguntas_enquete e detalhes para o relatório.
@@ -531,7 +535,14 @@ def reorganizar_bloco_final(md, idioma="pt"):
     preambulo, secoes = dividir_secoes(md)
     voz = [s for s in secoes if _eh_voz(s)]
     enquetes = [s for s in secoes if _eh_enquete(s)]
-    corpo = [s for s in secoes if _eh_secao_noticia(s)]
+    corpo_bruto = [s for s in secoes if _eh_secao_noticia(s)]
+    aberturas = [s for s in corpo_bruto if _RE_ABERTURA_DROPS.match(s["titulo"])]
+    agendas = [s for s in corpo_bruto if _RE_AGENDA.match(s["titulo"])]
+    miolo = [
+        s for s in corpo_bruto
+        if not _RE_ABERTURA_DROPS.match(s["titulo"]) and not _RE_AGENDA.match(s["titulo"])
+    ]
+    corpo = aberturas + miolo + agendas
     idx_ultima_noticia = max((i for i, s in enumerate(secoes) if _eh_secao_noticia(s)), default=-1)
     primeiro_voz = next((i for i, s in enumerate(secoes) if _eh_voz(s)), len(secoes))
     fora_de_ordem = [
@@ -540,6 +551,10 @@ def reorganizar_bloco_final(md, idioma="pt"):
         if (not _eh_secao_noticia(s))
         and (i < idx_ultima_noticia or (_eh_enquete(s) and voz and i < primeiro_voz))
     ]
+    if aberturas and corpo_bruto and corpo_bruto[0] is not aberturas[0]:
+        fora_de_ordem.extend(s["titulo"] for s in aberturas)
+    if agendas and corpo_bruto and corpo_bruto[-1] is not agendas[-1]:
+        fora_de_ordem.extend(s["titulo"] for s in agendas)
     info = {
         "mudou_ordem": False,
         "voz": len(voz),
