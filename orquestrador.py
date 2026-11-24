@@ -34,6 +34,8 @@ def parse_args(argv=None):
                         help="Extrai diretamente a partir de uma ou mais URLs de edição online (sem buscar no Gmail).")
     parser.add_argument("--sem-web", action="store_true",
                         help="Desativa a verificação automática nos sites oficiais quando um e-mail não chega.")
+    parser.add_argument("--forcar-pares", action="store_true",
+                        help="Ignora o modo stand by dos pares de newsletters e extrai imediatamente o que já chegou.")
     return parser.parse_args(argv)
 
 
@@ -49,6 +51,7 @@ def main(argv=None):
         ia=args.ia,
         urls=args.url,
         verificar_web=not args.sem_web,
+        forcar_pares=args.forcar_pares,
     )
     return executar(opcoes)
 

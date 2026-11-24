@@ -40,6 +40,7 @@ RESULTADOS_DIR = BASE_DIR / "resultados_markdown"
 DRY_RUN_DIR = RESULTADOS_DIR / "_dry_run"
 CONTROLE_GOL_PATH = BASE_DIR / "controle_gol.json"
 CONTROLE_NOTICIAS_PATH = BASE_DIR / "controle_noticias.json"
+CONTROLE_FONTES_PATH = BASE_DIR / "controle_fontes.json"
 PROMPTS_DIR = PACKAGE_DIR / "prompts"
 CONFIG_JSON_PATH = BASE_DIR / "config.json"
 
@@ -48,6 +49,7 @@ with open(CONFIG_JSON_PATH, "r", encoding="utf-8") as _f:
     _CONFIG = json.load(_f)
 
 MAPEAMENTO_PREFIXOS = _CONFIG["mapeamento_prefixos"]
+PARES_FONTES = _CONFIG.get("pares_fontes", [])
 PREFIXO_FUTEBOL = _CONFIG.get("prefixo_futebol", "tns sports")
 PREFIXOS_INGLES = {p.lower() for p in _CONFIG.get("prefixos_ingles", ["peak"])}
 PREFIXOS_DEDUPLICAR_NOTICIAS = {

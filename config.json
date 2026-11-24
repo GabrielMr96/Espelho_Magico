@@ -2,9 +2,11 @@
   "mapeamento_prefixos": {
     "the news": "Boletim Fora de Ordem",
     "tns money": "Fechamento de Caixa",
+    "moneydrops": "Fechamento de Caixa",
     "tns health": "Diagnóstico Sincero",
     "tns sports": "Gol Contra",
     "tns business": "Ata de Reunião",
+    "techdrops": "Ata de Reunião",
     "tns better work": "Ata de Reunião",
     "aidrops": "Alucinação Sintética",
     "notícias de segurança": "Hackeando o Problema",
@@ -12,6 +14,32 @@
     "notícias de games": "Controle Quebrado",
     "peak": "The Out of Order Dispatch"
   },
+
+  "pares_fontes": [
+    {
+      "titulo": "Fechamento de Caixa",
+      "fontes": ["tns money", "moneydrops"],
+      "regras_pareamento": [
+        {"fonte": "tns money", "dias": [1, 3], "aguarda": "moneydrops", "delta_dias": 0},
+        {"fonte": "moneydrops", "dias": [1, 3], "aguarda": "tns money", "delta_dias": 0}
+      ],
+      "expirar_standby_dias": 1
+    },
+    {
+      "titulo": "Ata de Reunião",
+      "fontes": ["tns business", "techdrops"],
+      "regras_pareamento": [
+        {"fonte": "techdrops", "dias": [0, 2], "aguarda": "tns business", "delta_dias": 1},
+        {"fonte": "tns business", "dias": [1, 3], "aguarda": "techdrops", "delta_dias": -1}
+      ],
+      "expirar_standby_dias": 1,
+      "evitar_repeticao_com_ultima_edicao": {
+        "fonte": "techdrops",
+        "dias": [4],
+        "janela_dias": 2
+      }
+    }
+  ],
 
   "prefixos_ingles": [
     "peak"
@@ -29,7 +57,9 @@
     "notícias de segurança": "Artigos de portais de tecnologia (ex.: Tecnoblog): NUNCA crie subtítulos genéricos como '### Resumo'; coloque os tópicos iniciais de resumo diretamente como lista de bullets abaixo do título '##' da matéria. Remova caixas de 'Leia também / Veja mais'.",
     "notícias de entretenimento": "Artigos de portais de cinema/cultura pop: NUNCA troque verbos ou adjetivos em português por inglês no meio das frases (proibido gerar 'é directed por', 'versões exaggerated', 'tendo declared'). Descarte listas de links relacionados ('Leia mais sobre...') e embeds de X/Twitter que apenas repitam citações já traduzidas no texto. Remova menções de autopromoção do portal fonte (ex.: 'equipe do O Vício faz parte do júri', 'portal O Vício', 'Confira a lista revelada em live:') e instruções de formulário ('Por favor, liste o nome específico do ator ou personagem, e o jogo.').",
     "notícias de games": "Artigos de portais de games: NUNCA troque verbos em português por inglês no meio das frases. Descarte seções de links relacionados ('Leia mais sobre...' / 'sobre [Jogo]') que listem apenas títulos de outras matérias ou trailers, e remova embeds de X/Twitter que apenas repitam falas já traduzidas no parágrafo vizinho. Remova menções de autopromoção do portal fonte (ex.: 'equipe do O Vício faz parte do júri', 'portal O Vício', 'Confira a lista revelada em live:') e instruções de formulário ('Por favor, liste o nome específico do ator ou personagem, e o jogo.').",
-    "aidrops": "Descarte integralmente o sumário de abertura ('No AiDrops de hoje...' e sua lista de bullets), blocos patrocinados ou campanhas internas ('DROPPED BY...', 'Campanha FOMO Zero', 'Kit Anti FOMO Club', 'Anuncie'), caixas de avaliação ('O que achou da edição de hoje?'), divulgações das outras news do grupo e endereço postal do rodapé. Converta 'Na coluna Ferrou de hoje' para abertura direta com letra inicial maiúscula e título limpo. Use ponto para separar milhares (ex.: 200.000) em vez de espaço especial."
+    "aidrops": "PRESERVE obrigatoriamente a nota/curiosidade inicial de abertura ('Na coluna Ferrou de hoje:' ou 'Hoje eu aprendi:') no início da edição sob um título '##' limpo. Descarte integralmente a saudação ('Boa tarde, Dropper!'), o sumário de abertura ('No AiDrops de hoje...' e sua lista de bullets), blocos patrocinados ou campanhas internas ('DROPPED BY...', 'Campanha FOMO Zero', 'Kit Anti FOMO Club', 'Anuncie'), caixas de avaliação ('O que achou da edição de hoje?'), 'Acompanhe o AiDrops', '+300.000 líderes...', 'Conheça os DROPS', créditos 'via MoneyDrops/TheDrops' e endereço postal do rodapé. Use ponto para separar milhares (ex.: 200.000) em vez de espaço especial.",
+    "moneydrops": "PRESERVE obrigatoriamente a nota inicial de abertura ('Pensei no chuveiro:...' ou 'Hoje eu aprendi:...') no topo da edição sob título '## Pensei no chuveiro' (ou '## Hoje eu aprendi'), mesmo quando unificado com tns money! Extraia também os panoramas 'Por aqui' e 'Lá fora' integrando sem duplicar números já presentes em tns money. Descarte integralmente a saudação ('Bom dia, Dropper!'), o sumário ('No Drop de hoje...' e sua lista de bullets), blocos patrocinados ('DROPPED BY...', 'Campanha FOMO Zero', 'Anuncie'), 'Esse post realmente foi feito!', caixas de avaliação ('O que você achou da edição de hoje?'), 'Fazer login', 'Veja as edições anteriores', 'Acompanhe o MoneyDrops', '+300.000 líderes...', 'Conheça os DROPS', créditos 'via TheDrops/MoneyDrops' e links órfãos sem fato explicado ('[para aprender]', '[para ler]'). Use ponto para separar milhares.",
+    "techdrops": "PRESERVE obrigatoriamente a nota inicial de abertura ('Hoje eu aprendi...') no topo da edição sob título '## Hoje eu aprendi' mantendo o texto completo ('Hoje eu aprendi que...'), inclusive quando unificado com tns business! Descarte integralmente a saudação ('Bom Dia, Dropper!'), o sumário ('No TechDrops de hoje...' e sua lista de bullets), blocos patrocinados ('DROPPED BY...', 'Campanha FOMO Zero', 'Kit Anti FOMO Club', 'Anuncie'), caixas de avaliação ('O que achou da edição de hoje?'), 'Fazer login', 'Keep Reading', 'Acompanhe o TechDrops', '+300.000 líderes...', 'Conheça os DROPS', créditos 'via TheDrops/TechDrops' e links órfãos sem fato explicado ('[para ler]', '[para adivinhar]', '[para se inspirar]'). Use ponto para separar milhares."
   },
 
   "prefixo_futebol": "tns sports",
@@ -43,6 +73,10 @@
       "tipo": "thenews",
       "arquivo_url": "https://thenews.com.br/newsletter/money"
     },
+    "moneydrops": {
+      "tipo": "beehiiv",
+      "arquivo_url": "https://www.moneydrops.com.br/archive"
+    },
     "tns health": {
       "tipo": "thenews",
       "arquivo_url": "https://thenews.com.br/newsletter/health"
@@ -54,6 +88,10 @@
     "tns business": {
       "tipo": "thenews",
       "arquivo_url": "https://thenews.com.br/newsletter/business"
+    },
+    "techdrops": {
+      "tipo": "beehiiv",
+      "arquivo_url": "https://www.techdrops.com.br/archive"
     },
     "tns better work": {
       "tipo": "beehiiv",

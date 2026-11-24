@@ -296,9 +296,15 @@ def test_buscar_edicoes_faltantes_na_web_recupera_apenas_edicao_nova(tmp_path):
 def test_aplicar_cabecalho_edicao_e_compatibilidade_com_data(tmp_path):
     md = "# 10 de novembro de 2026\n\n## Manchete Principal\n\nTexto da notícia."
     com_cabecalho = aplicar_cabecalho_edicao(md, "Controle Quebrado #274.md")
-    assert com_cabecalho.splitlines()[0] == "# Controle Quebrado #274 — 10 de novembro de 2026"
+    assert com_cabecalho.splitlines()[0] == "# Controle Quebrado #274 — terça-feira, 10 de novembro de 2026"
     # Idempotente se aplicado novamente
     assert aplicar_cabecalho_edicao(com_cabecalho, "Controle Quebrado #274.md") == com_cabecalho
+
+    # Também inclui dia da semana em inglês
+    md_en = "# November 7, 2026\n\n## Big Story\n\nSome content."
+    com_cabecalho_en = aplicar_cabecalho_edicao(md_en, "The Out of Order Dispatch #70.md", idioma="en")
+    assert com_cabecalho_en.splitlines()[0] == "# The Out of Order Dispatch #70 — Saturday, November 7, 2026"
+    assert aplicar_cabecalho_edicao(com_cabecalho_en, "The Out of Order Dispatch #70.md", idioma="en") == com_cabecalho_en
 
     # Continua sendo lido normalmente por ultima_data_extraida_local
     (tmp_path / "Controle Quebrado #274.md").write_text(com_cabecalho, encoding="utf-8")
@@ -342,7 +348,7 @@ def test_pipeline_executar_com_dupla_verificacao(tmp_path):
     assert resultados[0].status == "dry"
     assert resultados[0].noticias == 1
     gerado = (tmp_path / "Fechamento de Caixa #170.md").read_text(encoding="utf-8")
-    assert gerado.startswith("# Fechamento de Caixa #170 — 13 de novembro de 2026")
+    assert gerado.startswith("# Fechamento de Caixa #170 — sexta-feira, 13 de novembro de 2026")
     assert "- **Ibovespa:** Valor: 172.000" in gerado
     assert "## Enquete do Dia" in gerado and "- A" in gerado
     assert "|" not in gerado
@@ -797,6 +803,222 @@ def test_consolidacao_anexa_na_secao_mais_relevante_e_nao_na_primeira_introducao
     assert "excesso de cordialidade" in info["secoes_concatenadas"][0].lower()
     # A continuação das práticas deve aparecer DEPOIS do exercício de IA e junto de Rebecca Newton
     assert out.index("## Exercício de reflexão") < out.index("## Por que o excesso de cordialidade") < out.index("### Práticas para tornar reuniões")
+
+
+def test_pares_fechamento_standby_e_pareamento_terca_quinta(tmp_path):
+    (tmp_path / "Fechamento de Caixa #178.md").write_text("# Fechamento de Caixa #178 — 23 de novembro de 2026\n", encoding="utf-8")
+
+    def make_pipe(hoje, forcar_pares=False):
+        pipe = Pipeline(Opcoes(dry_run=True, interativo=False, forcar_pares=forcar_pares), extrator=None, drive_service=None, gmail_service=None)
+        pipe.pasta_historico = tmp_path
+        pipe._hoje_ref = hoje
+        return pipe
+
+    # Segunda (23/11): tns money sai sozinho imediatamente
+    email_seg = {"id": "m1", "assunto": "tns money: bear market", "remetente": "tns money", "data": "Mon, 23 Nov 2026 09:00:00 +0000", "conteudo_html": "<p>x</p>"}
+    pipe_seg = make_pipe(datetime.date(2026, 11, 23))
+    cfgs = pipe_seg.preparar_grupos([email_seg])
+    assert len(cfgs) == 1 and not pipe_seg.em_standby
+    assert cfgs[0].chave == "tns money" and not cfgs[0].unificar
+
+    # Terça (24/11) às 08h: só tns money chegou -> entra em stand by aguardando moneydrops
+    email_ter_tns = {"id": "m2", "assunto": "tns money: jensen", "remetente": "tns money", "data": "Tue, 24 Nov 2026 09:00:00 +0000", "conteudo_html": "<p>x</p>"}
+    pipe_ter = make_pipe(datetime.date(2026, 11, 24))
+    cfgs = pipe_ter.preparar_grupos([email_ter_tns])
+    assert cfgs == []
+    assert len(pipe_ter.em_standby) == 1
+    assert pipe_ter.em_standby[0].aguardando == "moneydrops"
+    assert pipe_ter.em_standby[0].data_esperada == datetime.date(2026, 11, 24)
+
+    # Terça (24/11) com --forcar-pares -> libera imediatamente
+    pipe_force = make_pipe(datetime.date(2026, 11, 24), forcar_pares=True)
+    cfgs_force = pipe_force.preparar_grupos([dict(email_ter_tns)])
+    assert len(cfgs_force) == 1 and not pipe_force.em_standby
+
+    # Quarta (25/11): stand by de terça expirou (1 dia) -> libera sozinho
+    pipe_exp = make_pipe(datetime.date(2026, 11, 25))
+    cfgs_exp = pipe_exp.preparar_grupos([dict(email_ter_tns)])
+    assert len(cfgs_exp) == 1 and not pipe_exp.em_standby
+
+    # Terça (24/11) com PAR completo (tns money + moneydrops) -> 1 edição unificada com dicas de ambas
+    email_ter_md = {"id": None, "assunto": "moneydrops: CEO", "remetente": "moneydrops", "fonte_chave": "moneydrops", "data": "Tue, 24 Nov 2026 12:04:00 +0000", "conteudo_html": "<p>y</p>"}
+    pipe_par = make_pipe(datetime.date(2026, 11, 24))
+    cfgs_par = pipe_par.preparar_grupos([dict(email_ter_tns), email_ter_md])
+    assert len(cfgs_par) == 1 and not pipe_par.em_standby
+    assert cfgs_par[0].unificar is True
+    assert cfgs_par[0].chaves_fontes == ["tns money", "moneydrops"]
+    assert cfgs_par[0].nome_final == "Fechamento de Caixa #179.md"
+    prompt = pipe_par._montar_prompt(cfgs_par[0].chave, unificar=True, chaves_fontes=cfgs_par[0].chaves_fontes)
+    assert "Pensei no chuveiro" in prompt
+
+
+def test_pares_ata_opcao_a_better_work_independente_e_dedup_sexta(tmp_path):
+    (tmp_path / "Ata de Reunião #128.md").write_text(
+        "# Ata de Reunião #128 — quinta-feira, 26 de novembro de 2026\n\n"
+        "## OpenAI fecha parceria bilionária com bancos\n\n"
+        "A OpenAI anunciou acordo de US$ 10 bilhões com três grandes bancos para automação corporativa.\n\n"
+        "## Enquete do Dia\n\nQuem ganha?\n\n- A\n- B\n- C\n- D\n",
+        encoding="utf-8",
+    )
+
+    def make_pipe(hoje):
+        pipe = Pipeline(Opcoes(dry_run=True, interativo=False), extrator=None, drive_service=None, gmail_service=None)
+        pipe.pasta_historico = tmp_path
+        pipe._hoje_ref = hoje
+        return pipe
+
+    # Segunda (23/11): techdrops entra em stand by, enquanto tns better work sai sozinho!
+    e_td_seg = {"id": None, "assunto": "techdrops: seg", "remetente": "techdrops", "fonte_chave": "techdrops", "data": "Mon, 23 Nov 2026 09:07:00 +0000", "conteudo_html": "<p>td</p>"}
+    e_bw_seg = {"id": "bw1", "assunto": "tns better work: liderança", "remetente": "tns better work", "data": "Mon, 23 Nov 2026 21:18:00 +0000", "conteudo_html": "<p>bw</p>"}
+    pipe_seg = make_pipe(datetime.date(2026, 11, 23))
+    cfgs_seg = pipe_seg.preparar_grupos([dict(e_td_seg), dict(e_bw_seg)])
+    assert len(cfgs_seg) == 1
+    assert cfgs_seg[0].chave == "tns better work"
+    assert len(pipe_seg.em_standby) == 1
+    assert pipe_seg.em_standby[0].fonte_recebida == "techdrops"
+    assert pipe_seg.em_standby[0].aguardando == "tns business"
+    assert pipe_seg.em_standby[0].data_esperada == datetime.date(2026, 11, 24)
+
+    # Terça (24/11): techdrops (Seg) + tns business (Ter) formam 1 par unificado + tns better work recebe nº sequencial (#129 e #130)
+    e_tb_ter = {"id": "tb1", "assunto": "tns business: acordo", "remetente": "tns business", "data": "Tue, 24 Nov 2026 09:00:00 +0000", "conteudo_html": "<p>tb</p>"}
+    pipe_ter = make_pipe(datetime.date(2026, 11, 24))
+    cfgs_ter = pipe_ter.preparar_grupos([dict(e_td_seg), dict(e_tb_ter), dict(e_bw_seg)])
+    assert len(cfgs_ter) == 2 and not pipe_ter.em_standby
+    nomes = {c.nome_final for c in cfgs_ter}
+    assert nomes == {"Ata de Reunião #129.md", "Ata de Reunião #130.md"}
+    cfg_par = next(c for c in cfgs_ter if len(c.chaves_fontes) == 2)
+    assert cfg_par.chaves_fontes == ["techdrops", "tns business"]
+    assert cfg_par.unificar is True
+    prompt_par = pipe_ter._montar_prompt(cfg_par.chave, unificar=True, chaves_fontes=cfg_par.chaves_fontes)
+    assert "Hoje eu aprendi" in prompt_par
+
+    # Sexta (27/11): techdrops (Sex) sai sozinho e injeta contexto anti-repetição da edição de quinta (#128, 26/11)
+    e_td_sex = {"id": None, "assunto": "techdrops: sex", "remetente": "techdrops", "fonte_chave": "techdrops", "data": "Fri, 27 Nov 2026 09:07:00 +0000", "conteudo_html": "<p>sex</p>"}
+    pipe_sex = make_pipe(datetime.date(2026, 11, 27))
+    cfgs_sex = pipe_sex.preparar_grupos([e_td_sex])
+    assert len(cfgs_sex) == 1 and not pipe_sex.em_standby
+    assert "OpenAI fecha parceria bilionária" in cfgs_sex[0].contexto_edicao_anterior
+    prompt_sex = pipe_sex._montar_prompt(
+        cfgs_sex[0].chave,
+        unificar=False,
+        chaves_fontes=cfgs_sex[0].chaves_fontes,
+        contexto_edicao_anterior=cfgs_sex[0].contexto_edicao_anterior,
+    )
+    assert "<evitar_repeticao_edicao_anterior>" in prompt_sex
+    assert "Hoje eu aprendi" in prompt_sex
+
+
+def test_web_beehiiv_drops_por_published_time_e_controle_fontes(tmp_path):
+    from espelho_magico.pipeline import carregar_controle_fontes, registrar_fontes_processadas
+
+    # Simula Ata #128 de segunda (23/11) sendo tns better work (assunto diferente de techdrops)
+    (tmp_path / "Ata de Reunião #128.md").write_text(
+        "# Ata de Reunião #128 — segunda-feira, 23 de novembro de 2026\n\n"
+        "## Por que o excesso de cordialidade prejudica lideranças\n\n"
+        "Rebecca Newton explica a paz passiva em reuniões corporativas.\n",
+        encoding="utf-8",
+    )
+    archive_td = (
+        '<html><body>'
+        '<a href="/p/o-mundo-em-modo-de-seguranc-a">💧 O mundo em modo de segurança</a>'
+        '</body></html>'
+    )
+    post_td = (
+        '<html><head><meta property="article:published_time" content="2026-11-23T09:07:07.000Z"/></head>'
+        '<body><h1>O mundo em modo de segurança</h1>'
+        '<p>Hoje eu aprendi que o KFC organizou um velório fake para fãs de GTA 6 faltarem ao trabalho.</p>'
+        '<p>Palo Alto Networks reportou um dilúvio de vulnerabilidades descobertas por IA 7x mais rápido.</p>'
+        '<p>SpaceX levantou nova dívida espacial enquanto concorrentes testam chips em órbita terrestre.</p>'
+        '</body></html>'
+    )
+
+    class Resp:
+        def __init__(self, text, status_code=200):
+            self.text = text
+            self.status_code = status_code
+
+        def raise_for_status(self):
+            pass
+
+    paginas = {
+        "https://www.techdrops.com.br/archive": archive_td,
+        "https://www.techdrops.com.br/p/o-mundo-em-modo-de-seguranc-a": post_td,
+    }
+
+    def fake_get(url, headers=None, timeout=20):
+        return Resp(paginas[url.split("?")[0]])
+
+    # tns business de terça (24/11) já chegou no Gmail -> busca web deve puxar techdrops de segunda (23/11)!
+    email_tb_ter = {
+        "id": "tb24",
+        "assunto": "tns business: acordo gigante",
+        "remetente": "tns business",
+        "data": "Tue, 24 Nov 2026 09:00:00 +0000",
+        "conteudo_html": "<p>business</p>",
+    }
+    controle_path = tmp_path / "controle_fontes.json"
+    recuperados = buscar_edicoes_faltantes_na_web(
+        [email_tb_ter],
+        pasta_resultados=tmp_path,
+        fontes_web={"techdrops": {"tipo": "beehiiv", "arquivo_url": "https://www.techdrops.com.br/archive"}},
+        mapeamento={"tns business": "Ata de Reunião", "techdrops": "Ata de Reunião"},
+        get=fake_get,
+        caminho_controle_fontes=controle_path,
+    )
+    assert len(recuperados) == 1
+    assert recuperados[0]["fonte_chave"] == "techdrops"
+    assert formatar_data_email(recuperados[0]["data"]) == "23 de novembro de 2026"
+
+    # Após registrar em controle_fontes.json, não baixa novamente a mesma URL
+    registrar_fontes_processadas(recuperados, "techdrops", caminho=controle_path)
+    dados_ctrl = carregar_controle_fontes(controle_path)
+    assert dados_ctrl["techdrops"]["ultima_data"] == "2026-11-23"
+    recuperados2 = buscar_edicoes_faltantes_na_web(
+        [email_tb_ter],
+        pasta_resultados=tmp_path,
+        fontes_web={"techdrops": {"tipo": "beehiiv", "arquivo_url": "https://www.techdrops.com.br/archive"}},
+        mapeamento={"tns business": "Ata de Reunião", "techdrops": "Ata de Reunião"},
+        get=fake_get,
+        caminho_controle_fontes=controle_path,
+    )
+    assert recuperados2 == []
+
+
+def test_integridade_aceita_descarte_de_pauta_repetida_da_edicao_anterior():
+    from espelho_magico.validacao import aplicar_dupla_verificacao
+
+    entrada = (
+        "## OpenAI fecha parceria bilionária com bancos\n"
+        "A OpenAI fechou contrato de US$ 10 bilhões com 3 bancos para 50.000 funcionários em 18 meses, "
+        "prevendo ganho de 45% de eficiência até 2028 com investimento adicional de US$ 750 milhões.\n\n"
+        "## Nova startup brasileira capta rodada recorde\n"
+        "A startup fictícia levantou R$ 120 milhões em série B liderada por dois fundos globais."
+    )
+    md_extraido = (
+        "# 27 de novembro de 2026\n\n"
+        "## Nova startup brasileira capta rodada recorde\n\n"
+        "A startup fictícia levantou R$ 120 milhões em série B liderada por dois fundos globais.\n\n"
+        "## Enquete do Dia\n\nQual é a real?\n\n- A\n- B\n- C\n- D"
+    )
+    contexto_ant = "Edição anterior: Ata de Reunião #128 (26/11/2026)\n- OpenAI fecha parceria bilionária com bancos: acordo de US$ 10 bilhões."
+
+    prompts_recebidos = []
+
+    def fake_reparar(conteudo, prompt):
+        prompts_recebidos.append((conteudo, prompt))
+        return "[APENAS_RUIDO_DESCARTADO] matéria da OpenAI já coberta na edição anterior de quinta-feira"
+
+    _, rel = aplicar_dupla_verificacao(
+        md_extraido,
+        entrada,
+        idioma="pt",
+        reparar=fake_reparar,
+        contexto_edicao_anterior=contexto_ant,
+    )
+    assert prompts_recebidos
+    assert "<edicao_anterior_ja_coberta>" in prompts_recebidos[0][0]
+    assert not rel.tem_aviso
+
 
 
 

@@ -6,9 +6,9 @@ Automação que lê newsletters do Gmail (marcador `Espelho_Magico`), arranca o 
 
 1. **Busca Resiliente no Gmail + Dupla Verificação Web**:
    - Busca e-mails **não lidos** no marcador configurado (`Espelho_Magico`), com pacing e backoff automático para respeitar limites do Google Cloud (Rate Limit 403).
-   - Para as newsletters externas configuradas em `fontes_web` (`the news`, `tns money`, `tns health`, `tns sports`, `tns business`, `tns better work`, `aidrops` e `peak`), se algum e-mail não chegar no Gmail, verifica automaticamente nos arquivos públicos dos sites oficiais se saiu edição com data posterior ao último `.md` salvo em `resultados_markdown/`.
+   - Para as newsletters externas configuradas em `fontes_web` (`the news`, `tns money`, `MoneyDrops`, `tns health`, `tns sports`, `tns business`, `TechDrops`, `tns better work`, `aidrops` e `peak`), se algum e-mail não chegar no Gmail, verifica automaticamente nos arquivos públicos dos sites oficiais se saiu edição nova (com controle individual por fonte em `controle_fontes.json`).
    - Também permite extração avulsa diretamente via `--url <link>`.
-2. **Agrupamento Inteligente**: Agrupa mensagens por newsletter (mapeamento em `config.json`), detecta o histórico e calcula a numeração da próxima edição automaticamente.
+2. **Agrupamento Inteligente + Pares com Stand By**: Agrupa mensagens por newsletter (mapeamento em `config.json`), calcula a numeração sequencial da próxima edição e concatena automaticamente pares configurados (`tns money` + `MoneyDrops` em ter/qui no *Fechamento de Caixa*; `TechDrops` seg/qua + `tns business` ter/qui no *Ata de Reunião*, com *stand by* automático até o par chegar, `tns better work` independente e filtro anti-repetição na edição de sexta do `TechDrops`).
 3. **Pré-limpeza HTML → Markdown**: Converte tabelas de layout para blocos enxutos, preserva linhas de tabelas de dados (cotações/mercados), remove menus/rodapés web (`<nav>`, `<footer>`, `<aside>`), blocos de "Leia mais sobre..." e créditos fotográficos puros (`Manoella Mello | Globo`, `Fortune | Getty Images`), economizando até 90% dos tokens antes do envio à IA.
 4. **Extração Literal com IA (Fatiamento Inteligente + Segunda Passagem Seletiva)**:
    - Extrai o conteúdo sem resumir ou parafrasear usando o Gemini (`gemini-4-hydrogen` como prioridade no tier gratuito, com rotação de chaves, pausa curta de retentativa no tier principal `PAUSA_ANTES_DOWNGRADE` antes de cair para modelos `lite`/`gemma` em picos de `503`, e fallback para provedor alternativo `ALT_*` ou Perplexity com busca web desativada).
@@ -42,6 +42,7 @@ Automação que lê newsletters do Gmail (marcador `Espelho_Magico`), arranca o 
    python orquestrador.py --unificar sim        # mescla 2+ e-mails do mesmo grupo sem perguntar
    python orquestrador.py --url "https://..."   # extrai diretamente a partir do link de uma edição online
    python orquestrador.py --sem-web             # consulta apenas o Gmail, desativando a verificação nos sites
+   python orquestrador.py --forcar-pares        # ignora o stand by dos pares e extrai o que já chegou
    python orquestrador.py --ia alt              # usa o provedor alternativo configurado no .env nesta execução
    python orquestrador.py --sem-interacao       # para execução automatizada (Agendador de Tarefas)
    python orquestrador.py --help                # opções disponíveis
@@ -54,7 +55,7 @@ Automação que lê newsletters do Gmail (marcador `Espelho_Magico`), arranca o 
 | `config.json` | Mapeamento de prefixos → títulos, arquivos públicos para dupla verificação (`fontes_web`), diretrizes específicas por fonte (`dicas_por_prefixo`), idioma (`prefixos_ingles`), deduplicação por título + data/hora (`prefixos_deduplicar_noticias`), ordem de modelos Gemini e filtros de ligas/clubes |
 | `.env` | Chaves de API (`GEMINI_API_KEY`, `ALT_*`, `PERPLEXITY_API_KEY`), `IA_PADRAO`, retentativas (`MAX_RODADAS`, `BACKOFF_*`, `PAUSA_ANTES_DOWNGRADE`), segunda passagem (`DUPLA_PASSAGEM_REVISAO`), tamanho máximo por chamada (`MAX_CHARS_POR_CHAMADA`), verificação web (`VERIFICAR_FONTES_WEB`), workers paralelos (`MAX_WORKERS`), IDs de pasta do Drive, label do Gmail |
 | `espelho_magico/prompts/` | Diretrizes de extração literal, tratamento de imagens/tabelas/quizzes para áudio e modo unificação |
-| `prompts_notebooklm/` | Prompts universais prontos para copiar e colar no Google NotebookLM (Português e Inglês) |
+| `prompts_notebooklm/` | Prompts universais prontos para copiar e colar no Google NotebookLM (Áudio PT/EN, Vídeo Curto vertical e Legenda de Reels) |
 
 ## 📁 Estrutura
 
@@ -73,7 +74,7 @@ espelho_magico/
 ├── pipeline.py            # agrupamento, extração, painel visual e publicação
 ├── validacao.py           # dupla verificação das regras e adaptação para podcast
 └── prompts/               # templates de prompts para o Gemini
-prompts_notebooklm/        # prompts otimizados para geração de áudio no NotebookLM
+prompts_notebooklm/        # prompts otimizados para áudio, vídeo curto e legenda de Reels no NotebookLM
 tests/                     # suíte completa de testes unitários (pytest)
 ```
 

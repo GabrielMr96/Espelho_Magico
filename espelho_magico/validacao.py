@@ -689,20 +689,23 @@ def _contar_blocos_de_opcoes(linhas):
 
 PROMPT_ENQUETE = {
     "pt": (
-        "Você é roteirista do podcast ácido e bem-humorado da rede Central do Caos. Com base na pauta "
-        "fornecida, crie UMA enquete provocativa e inteligente sobre a notícia mais polêmica, absurda ou "
-        "impactante da edição, para os apresentadores debaterem no encerramento.\n"
+        "Você é roteirista do podcast ácido, escrachado e bem-humorado da rede Central do Caos. Com base na pauta "
+        "fornecida, crie UMA enquete provocativa, criativa e engraçada sobre a notícia mais absurda, hipócrita ou "
+        "polêmica da edição, feita para render zoação e debate rápido entre os apresentadores no encerramento.\n"
         "Responda SOMENTE neste formato, sem nenhum texto antes ou depois:\n\n"
-        "## Enquete do Dia\n\n<pergunta curta terminando com ?>\n\n- <opção 1>\n- <opção 2>\n- <opção 3>\n- <opção 4>\n\n"
-        "As 4 opções devem ser curtas (até 12 palavras), contrastantes entre si e afiadas, sem palavrões."
+        "## Enquete do Dia\n\n<pergunta curta, irônica e direta terminando com ?>\n\n- <opção 1>\n- <opção 2>\n- <opção 3>\n- <opção 4>\n\n"
+        "REGRAS: 4 opções curtas (até 10 palavras), com humor ácido e linguagem falada de internet (fuja de frases "
+        "sérias, genéricas ou burocráticas estilo prova de múltipla escolha); cada opção deve representar um ângulo "
+        "bem distinto e divertido (ex.: cinismo de mercado, revolta popular, teoria sarcástica e resposta absurda), sem palavrões."
     ),
     "en": (
-        "You are a writer for a sharp, funny podcast on the Central do Caos network. Based on the rundown "
-        "provided, create ONE provocative, smart poll about the most controversial, absurd or impactful story "
-        "of the edition, for the hosts to debate at the end of the episode.\n"
+        "You are a writer for an unhinged, sharp, funny podcast on the Central do Caos network. Based on the rundown "
+        "provided, create ONE provocative, witty, genuinely funny poll about the most absurd, hypocritical or "
+        "controversial story of the edition, built to spark snappy banter between the hosts at the end.\n"
         "Reply ONLY in this format, with no text before or after:\n\n"
-        "## Daily Poll\n\n<short question ending with ?>\n\n- <option 1>\n- <option 2>\n- <option 3>\n- <option 4>\n\n"
-        "The 4 options must be short (up to 12 words), contrasting and witty, with no profanity."
+        "## Daily Poll\n\n<short, punchy, ironic question ending with ?>\n\n- <option 1>\n- <option 2>\n- <option 3>\n- <option 4>\n\n"
+        "RULES: 4 punchy options (up to 10 words), conversational and darkly funny (never stiff, corporate or "
+        "multiple-choice-exam phrasing); each option must take a sharply different, funny angle, with no profanity."
     ),
 }
 
@@ -1471,7 +1474,7 @@ def _extrair_motivo_apenas_ruido(resposta):
     return motivo[:100]
 
 
-def _reparar_integridade_com_ia(md, entrada, idioma, reparar):
+def _reparar_integridade_com_ia(md, entrada, idioma, reparar, contexto_edicao_anterior=""):
     """Tenta recuperar com IA notícias/pautas e números omitidos ou confirmar se os ausentes são apenas ruído.
 
     Retorna `(md_novo, pct_antes, pct_depois, status_rep, detalhe, faltantes_depois)` onde `status_rep` é:
@@ -1494,13 +1497,31 @@ def _reparar_integridade_com_ia(md, entrada, idioma, reparar):
         if lista_ausentes
         else f"{len(pautas_relevantes)} pauta(s) editorial(is) da fonte original possivelmente omitida(s)"
     )
+    regra_anterior = (
+        " NUNCA restaure notícias ou números de pautas repetidas que já foram cobertas na edição anterior "
+        "listada em <edicao_anterior_ja_coberta>."
+        if contexto_edicao_anterior
+        else ""
+    )
+    alvo_ruido = (
+        "exclusivamente publicidade, cupom, oferta comercial, clickbait, rodapé descartável ou pauta repetida "
+        "já coberta na edição anterior"
+        if contexto_edicao_anterior
+        else "exclusivamente publicidade, cupom, oferta comercial, clickbait ou rodapé descartável"
+    )
     regra_ruido_descartado = (
         " NUNCA restaure anúncios, patrocínios, cupons de desconto, taxas promocionais de marcas "
         "(ex.: ARQ, investback), sorteios de iPhone, planos de assinatura (ex.: Peak Premium), promoções/guia de "
-        "compras (ex.: Black Friday), links órfãos/clickbait, mídia kit ou endereços postais. "
-        f"Se TODOS os trechos/números ausentes em <trechos_fonte> forem exclusivamente publicidade, cupom, oferta "
-        f"comercial, clickbait ou rodapé descartável (sem nenhuma informação jornalística legítima omitida), "
+        "compras (ex.: Black Friday), links órfãos/clickbait, mídia kit ou endereços postais."
+        + regra_anterior
+        + f" Se TODOS os trechos/números ausentes em <trechos_fonte> forem {alvo_ruido} "
+        f"(sem nenhuma informação jornalística inédita omitida), "
         f"responda APENAS com: `{_TOKEN_APENAS_RUIDO} <motivo curto em 1 linha>`."
+    )
+    bloco_anterior = (
+        f"\n\n<edicao_anterior_ja_coberta>\n{contexto_edicao_anterior}\n</edicao_anterior_ja_coberta>"
+        if contexto_edicao_anterior
+        else ""
     )
     full_doc = len(md) <= 8500
     if full_doc:
@@ -1511,7 +1532,7 @@ def _reparar_integridade_com_ia(md, entrada, idioma, reparar):
             "mantendo o formato limpo de roteiro (título #, seções ##, tópicos em vez de tabelas, sem URLs e preservando "
             "Enquete do Dia/Daily Poll ao final)." + regra_ruido_descartado
         )
-        conteudo = f"<rascunho_atual>\n{md}\n</rascunho_atual>\n\n<trechos_fonte>\n{trechos}\n</trechos_fonte>"
+        conteudo = f"<rascunho_atual>\n{md}\n</rascunho_atual>\n\n<trechos_fonte>\n{trechos}\n</trechos_fonte>{bloco_anterior}"
     else:
         titulos_atuais = "\n".join(f"- {s['titulo']}" for s in dividir_secoes(md)[1] if _eh_secao_noticia(s))
         instrucao = (
@@ -1522,7 +1543,7 @@ def _reparar_integridade_com_ia(md, entrada, idioma, reparar):
         )
         conteudo = (
             f"<titulos_ja_extraidos>\n{titulos_atuais}\n</titulos_ja_extraidos>\n\n"
-            f"<trechos_fonte>\n{trechos}\n</trechos_fonte>"
+            f"<trechos_fonte>\n{trechos}\n</trechos_fonte>{bloco_anterior}"
         )
 
     try:
@@ -1534,13 +1555,18 @@ def _reparar_integridade_com_ia(md, entrada, idioma, reparar):
 
     motivo_ruido = _extrair_motivo_apenas_ruido(resposta)
     if motivo_ruido is not None:
-        pauta_ok = len(pautas_verif) < 3 or pct_pautas_antes >= 70
-        cobertura_editorial_ok = pct_antes >= 50 or (proporcao_antes >= 40 and pauta_ok)
+        pauta_ok = bool(contexto_edicao_anterior) or len(pautas_verif) < 3 or pct_pautas_antes >= 70
+        cobertura_editorial_ok = bool(contexto_edicao_anterior) or pct_antes >= 50 or (proporcao_antes >= 40 and pauta_ok)
         if contar_noticias(md) >= 1 and cobertura_editorial_ok and pauta_ok:
+            rotulo_descarte = (
+                "publicidade/ruído ou repetição da edição anterior"
+                if contexto_edicao_anterior
+                else "publicidade/ruído descartado"
+            )
             det_ruido = (
-                f"confirmado pela IA que os ausentes eram apenas publicidade/ruído descartado ({motivo_ruido})"
+                f"confirmado pela IA que os ausentes eram apenas {rotulo_descarte} ({motivo_ruido})"
                 if motivo_ruido
-                else "confirmado pela IA que os ausentes eram apenas publicidade/ruído descartado"
+                else f"confirmado pela IA que os ausentes eram apenas {rotulo_descarte}"
             )
             return md, pct_antes, pct_antes, "apenas_ruido", det_ruido, faltantes
         return md, pct_antes, pct_antes, "sem_mudanca", "", faltantes
@@ -1829,7 +1855,15 @@ def auditar_estrutura_com_ia(md, idioma="pt", revisar=None):
 
 
 def aplicar_dupla_verificacao(
-    md, entrada="", idioma="pt", gerar=None, extrair_data=None, reparar=None, notificar=None, revisar_estrutura=None
+    md,
+    entrada="",
+    idioma="pt",
+    gerar=None,
+    extrair_data=None,
+    reparar=None,
+    notificar=None,
+    revisar_estrutura=None,
+    contexto_edicao_anterior="",
 ):
     """Executa todas as regras sobre o Markdown final. Devolve (md_corrigido, RelatorioValidacao).
 
@@ -2000,7 +2034,9 @@ def aplicar_dupla_verificacao(
                 acao="restaurando trechos, pautas e números omitidos com IA...",
                 etapa=etapa_msg,
             )
-            md_rec, _, _, status_rep, det_rec, faltantes_depois = _reparar_integridade_com_ia(md, entrada, idioma, reparar)
+            md_rec, _, _, status_rep, det_rec, faltantes_depois = _reparar_integridade_com_ia(
+                md, entrada, idioma, reparar, contexto_edicao_anterior=contexto_edicao_anterior
+            )
             if status_rep == "apenas_ruido":
                 registrar("Integridade (números)", CORRIGIDO, encontrado=enc_int, corrigido=det_rec, usou_ia=True)
             elif status_rep == "restaurado":
@@ -2011,7 +2047,7 @@ def aplicar_dupla_verificacao(
                 else:
                     # Recuperação parcial: tenta mais uma passagem focada nos ausentes restantes
                     md_rec2, _, _, status_rep2, det_rec2, faltantes_depois2 = _reparar_integridade_com_ia(
-                        md, entrada, idioma, reparar
+                        md, entrada, idioma, reparar, contexto_edicao_anterior=contexto_edicao_anterior
                     )
                     if status_rep2 == "apenas_ruido":
                         registrar(

@@ -2,6 +2,7 @@
 import concurrent.futures
 import datetime
 import email.utils
+import json
 import re
 import sys
 import threading
@@ -72,6 +73,37 @@ _MESES_EN = (
     "", "January", "February", "March", "April", "May", "June",
     "July", "August", "September", "October", "November", "December",
 )
+_DIAS_SEMANA_PT = (
+    "segunda-feira", "terça-feira", "quarta-feira", "quinta-feira",
+    "sexta-feira", "sábado", "domingo",
+)
+_DIAS_SEMANA_EN = (
+    "Monday", "Tuesday", "Wednesday", "Thursday",
+    "Friday", "Saturday", "Sunday",
+)
+_RE_DIA_SEMANA_PT = re.compile(
+    r"\b(?:segunda|ter[cç]a|quarta|quinta|sexta)(?:-feira)?\b|\bs[aá]bado\b|\bdomingo\b",
+    re.I,
+)
+_RE_DIA_SEMANA_EN = re.compile(
+    r"\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
+    re.I,
+)
+_ALIASES_PREFIXO = {
+    "money drops": "moneydrops",
+    "tech drops": "techdrops",
+    "ai drops": "aidrops",
+}
+_FUSO_BRT = datetime.timezone(datetime.timedelta(hours=-3))
+
+
+def formatar_data_com_dia_semana(dt, idioma="pt"):
+    """Formata um `datetime.date` incluindo o dia da semana ('terça-feira, 24 de novembro de 2026' / 'Tuesday, November 24, 2026')."""
+    if not dt:
+        return ""
+    if idioma == "en":
+        return f"{_DIAS_SEMANA_EN[dt.weekday()]}, {_MESES_EN[dt.month]} {dt.day}, {dt.year}"
+    return f"{_DIAS_SEMANA_PT[dt.weekday()]}, {dt.day} de {_MESES_PT[dt.month]} de {dt.year}"
 
 
 def formatar_data_email(data_rfc2822, idioma="pt"):
@@ -97,6 +129,7 @@ class Opcoes:
     ia: str = ""  # "" = IA_PADRAO do .env | "gemini" | "alt" | "perplexity"
     urls: list = field(default_factory=list)
     verificar_web: bool = True
+    forcar_pares: bool = False
 
 
 @dataclass
@@ -106,6 +139,18 @@ class ConfigGrupo:
     titulo_base: str
     nome_final: str
     unificar: bool = False
+    chaves_fontes: list = field(default_factory=list)
+    contexto_edicao_anterior: str = ""
+
+
+@dataclass
+class ItemStandBy:
+    titulo_base: str
+    fonte_recebida: str
+    data_recebida: datetime.date
+    aguardando: str
+    data_esperada: datetime.date
+    expira_em: datetime.date
 
 
 @dataclass
@@ -134,9 +179,18 @@ def agrupar_emails(emails, mapeamento):
     """Agrupa por prefixo conhecido (no remetente ou no início do assunto); os demais ficam um por grupo."""
     grupos = {}
     for email_item in emails:
+        fonte_explicita = (email_item.get("fonte_chave") or "").lower()
+        if fonte_explicita and fonte_explicita in mapeamento:
+            grupos.setdefault(fonte_explicita, []).append(email_item)
+            continue
         assunto = email_item["assunto"].lower()
         remetente = email_item.get("remetente", "").lower()
         chave = next((p for p in mapeamento if p in remetente or assunto.startswith(p)), None)
+        if chave is None:
+            for alias, destino in _ALIASES_PREFIXO.items():
+                if destino in mapeamento and (alias in remetente or assunto.startswith(alias)):
+                    chave = destino
+                    break
         grupos.setdefault(chave or assunto, []).append(email_item)
     return grupos
 
@@ -307,6 +361,10 @@ def _inferir_prefixo_de_url(url, html, filtros_grupo, mapeamento):
         return "tns sports"
     if "aidrops" in url_low and "aidrops" in mapeamento:
         return "aidrops"
+    if ("moneydrops" in url_low or "money-drops" in url_low) and "moneydrops" in mapeamento:
+        return "moneydrops"
+    if ("techdrops" in url_low or "tech-drops" in url_low) and "techdrops" in mapeamento:
+        return "techdrops"
     if "thejobs.com.br" in url_low and "tns better work" in mapeamento:
         return "tns better work"
     if "readthepeak.com" in url_low and "peak" in mapeamento:
@@ -338,6 +396,8 @@ def _montar_item_de_html(url, html, filtros_grupo=None, mapeamento=None, data_fo
         "data": data_rfc,
         "conteudo_html": html,
         "eh_html": True,
+        "url": url,
+        "fonte_chave": prefixo or "",
     }
 
 
@@ -363,8 +423,141 @@ def buscar_email_de_url(url, filtros_grupo=None, mapeamento=None, get=requests.g
     return _montar_item_de_html(url, resposta.text, filtros_grupo, mapeamento, data_forcada=data_forcada)
 
 
-def _verificar_fonte_thenews(chave, titulo_base, arquivo_url, ultima_data, get=requests.get):
+_LOCK_CONTROLE_FONTES = threading.Lock()
+
+
+def carregar_controle_fontes(caminho=None):
+    """Lê `controle_fontes.json` com a última data e URLs já extraídas por fonte."""
+    arq = Path(caminho) if caminho else config.CONTROLE_FONTES_PATH
+    if not arq.exists():
+        return {}
+    try:
+        dados = json.loads(arq.read_text(encoding="utf-8"))
+        return dados if isinstance(dados, dict) else {}
+    except Exception:
+        return {}
+
+
+def salvar_controle_fontes(dados, caminho=None):
+    arq = Path(caminho) if caminho else config.CONTROLE_FONTES_PATH
+    arq.parent.mkdir(parents=True, exist_ok=True)
+    arq.write_text(json.dumps(dados, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _extrair_data_item(email_item):
+    """Extrai a data calendário (BRT) de um item de e-mail ou página web."""
+    if not email_item:
+        return None
+    bruto = email_item.get("data", "")
+    if bruto:
+        try:
+            dt = email.utils.parsedate_to_datetime(bruto)
+            dt = dt if dt.tzinfo else dt.replace(tzinfo=datetime.timezone.utc)
+            return dt.astimezone(_FUSO_BRT).date()
+        except Exception:
+            pass
+    return extrair_data_de_texto(email_item.get("assunto", ""))
+
+
+def _extrair_data_html_beehiiv(html_post, url_post=""):
+    """Extrai a data de publicação (BRT) de um post Beehiiv priorizando `article:published_time` / `<time>`."""
+    soup_post = BeautifulSoup(html_post, "html.parser")
+    meta_pub = soup_post.find("meta", {"property": "article:published_time"})
+    tag_time = soup_post.find("time")
+    raw_iso = (
+        (meta_pub.get("content") if meta_pub else "")
+        or (tag_time.get("datetime") if tag_time else "")
+        or ""
+    ).strip()
+    if raw_iso:
+        try:
+            dt_iso = datetime.datetime.fromisoformat(raw_iso.replace("Z", "+00:00"))
+            dt_iso = dt_iso if dt_iso.tzinfo else dt_iso.replace(tzinfo=datetime.timezone.utc)
+            return dt_iso.astimezone(_FUSO_BRT).date()
+        except Exception:
+            dt_fallback = extrair_data_de_texto(raw_iso)
+            if dt_fallback:
+                return dt_fallback
+    texto_topo = soup_post.get_text(" ", strip=True)[:1500]
+    return extrair_data_de_texto(texto_topo) or extrair_data_de_texto(url_post)
+
+
+def registrar_fontes_processadas(emails_ok, chave_padrao="", caminho=None):
+    """Atualiza `controle_fontes.json` com a última data e URLs extraídas de cada fonte processada."""
+    if not emails_ok:
+        return
+    with _LOCK_CONTROLE_FONTES:
+        dados = carregar_controle_fontes(caminho)
+        alterou = False
+        for item in emails_ok:
+            chave = (item.get("fonte_chave") or chave_padrao or "").lower().strip()
+            if not chave:
+                continue
+            reg = dados.setdefault(chave, {"ultima_data": "", "urls": []})
+            dt = _extrair_data_item(item)
+            if dt:
+                iso = dt.isoformat()
+                if not reg.get("ultima_data") or iso > reg["ultima_data"]:
+                    reg["ultima_data"] = iso
+                    alterou = True
+            url = (item.get("url") or "").strip()
+            if url:
+                urls = list(reg.get("urls") or [])
+                if url not in urls:
+                    urls.append(url)
+                    reg["urls"] = urls[-25:]
+                    alterou = True
+        if alterou:
+            salvar_controle_fontes(dados, caminho)
+
+
+def montar_contexto_edicao_anterior(pasta, titulo_base, data_referencia, janela_dias=2):
+    """Resume os títulos e inícios das matérias da última edição recente de `titulo_base` (evita repetição na sexta)."""
+    if not pasta or not titulo_base or not data_referencia:
+        return ""
+    arquivos = []
+    for arq in Path(pasta).glob(f"{glob_escape(titulo_base)} #*.md"):
+        m = re.search(r"#(\d+)\.md$", arq.name)
+        if m:
+            arquivos.append((int(m.group(1)), arq))
+    arquivos.sort(key=lambda par: par[0], reverse=True)
+
+    ignorar_titulos = ("enquete do dia", "daily poll", "voz dos ouvintes", "listener feedback", "hoje eu aprendi", "pensei no chuveiro")
+    blocos_edicoes = []
+    for _, arq in arquivos[:5]:
+        try:
+            conteudo = arq.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            continue
+        primeiras = "\n".join(conteudo.splitlines()[:5])
+        dt_arq = extrair_data_de_texto(primeiras)
+        if not dt_arq:
+            continue
+        delta = (data_referencia - dt_arq).days
+        if delta <= 0 or delta > janela_dias:
+            continue
+        itens = []
+        secoes = re.split(r"(?m)^##\s+", conteudo)[1:]
+        for sec in secoes:
+            linhas = [l.strip() for l in sec.splitlines() if l.strip()]
+            if not linhas:
+                continue
+            titulo_sec = linhas[0].strip()
+            if any(titulo_sec.lower().startswith(ig) for ig in ignorar_titulos):
+                continue
+            corpo_sec = " ".join(l for l in linhas[1:] if not l.startswith("#"))[:220]
+            itens.append(f"- {titulo_sec}: {corpo_sec}" if corpo_sec else f"- {titulo_sec}")
+        if itens:
+            blocos_edicoes.append(
+                f"Edição anterior: {arq.stem} ({dt_arq:%d/%m/%Y})\n" + "\n".join(itens[:12])
+            )
+            break
+    return "\n\n".join(blocos_edicoes)
+
+
+def _verificar_fonte_thenews(chave, titulo_base, arquivo_url, ultima_data, get=requests.get, datas_necessarias=None):
     """Verifica na página de arquivo do the news (`thenews.com.br/newsletter/<marca>`) se há edição mais recente."""
+    datas_necessarias = set(datas_necessarias or ())
     slug_marca = arquivo_url.rstrip("/").split("/")[-1]
     prefixo_href = f"/newsletter/{slug_marca}/"
     resp = _get_sem_cache(get, arquivo_url, timeout=20)
@@ -382,10 +575,12 @@ def _verificar_fonte_thenews(chave, titulo_base, arquivo_url, ultima_data, get=r
         dt = extrair_data_de_texto(texto_card) or extrair_data_de_texto(href)
         if not dt:
             continue
-        if ultima_data and dt <= ultima_data:
-            continue
-        if not ultima_data and (datetime.date.today() - dt).days > 2:
-            continue
+        eh_necessaria = dt in datas_necessarias
+        if not eh_necessaria:
+            if ultima_data and dt <= ultima_data:
+                continue
+            if not ultima_data and (datetime.date.today() - dt).days > 2:
+                continue
         url_edicao = urllib.parse.urljoin(arquivo_url, href)
         candidatos.append((dt, url_edicao, None))
         if len(candidatos) >= 3:
@@ -394,10 +589,11 @@ def _verificar_fonte_thenews(chave, titulo_base, arquivo_url, ultima_data, get=r
     # Fallback direto pela URL canônica (/DD-MM-AAAA) caso o cache de CDN da vitrine ainda não tenha atualizado
     hoje = datetime.date.today()
     datas_encontradas = {dt for dt, _, _ in candidatos}
-    for dt_probe in (hoje - datetime.timedelta(days=1), hoje):
+    probes = sorted(set((hoje - datetime.timedelta(days=1), hoje)) | datas_necessarias)
+    for dt_probe in probes:
         if dt_probe in datas_encontradas:
             continue
-        if ultima_data and dt_probe <= ultima_data:
+        if dt_probe not in datas_necessarias and ultima_data and dt_probe <= ultima_data:
             continue
         url_direta = f"{arquivo_url.rstrip('/')}/{dt_probe:%d-%m-%Y}"
         try:
@@ -544,9 +740,21 @@ def _agrupar_cards_beehiiv(soup, arquivo_url):
 
 
 def _verificar_fonte_beehiiv(
-    chave, titulo_base, arquivo_url, ultima_data, get=requests.get, pasta_resultados=None, emails_atuais_grupo=None
+    chave,
+    titulo_base,
+    arquivo_url,
+    ultima_data,
+    get=requests.get,
+    pasta_resultados=None,
+    emails_atuais_grupo=None,
+    urls_processadas=None,
+    datas_necessarias=None,
+    permitir_mesma_data_nao_extraida=False,
 ):
-    """Verifica arquivo Beehiiv (`thenewscc.beehiiv.com/archive`, `aidrops.com.br/archive`, `thejobs.com.br/archive`)."""
+    """Verifica arquivo Beehiiv (`thenewscc.beehiiv.com/archive`, `aidrops/moneydrops/techdrops.com.br/archive`, `thejobs.com.br/archive`)."""
+    urls_processadas = set(urls_processadas or ())
+    datas_necessarias = set(datas_necessarias or ())
+    min_necessaria = min(datas_necessarias) if datas_necessarias else None
     resp = _get_sem_cache(get, arquivo_url, timeout=20)
     resp.raise_for_status()
     soup = BeautifulSoup(resp.text, "html.parser")
@@ -564,55 +772,72 @@ def _verificar_fonte_beehiiv(
 
     itens = []
     for idx, (url_post, texto_card) in enumerate(cards[:4]):
+        if url_post in urls_processadas:
+            continue
         eh_night = "/p/night" in url_post.lower() or "night #" in texto_card.lower()
         if emails_atuais_grupo and ((eh_night and tem_night_gmail) or (not eh_night and tem_manha_gmail)):
             continue
 
         dt_card = extrair_data_de_texto(texto_card) or extrair_data_de_texto(url_post)
         if dt_card is not None:
-            if ultima_data:
-                if dt_card < ultima_data:
-                    continue
-                if dt_card == ultima_data:
-                    if not eh_night:
+            eh_necessaria = dt_card in datas_necessarias
+            if not eh_necessaria:
+                if ultima_data:
+                    if dt_card < ultima_data:
                         continue
-                    resp_post = get(url_post, headers={"User-Agent": "Mozilla/5.0"}, timeout=25)
-                    resp_post.raise_for_status()
-                    texto_local = _texto_edicoes_da_data(pasta_resultados, titulo_base, dt_card) if pasta_resultados else ""
-                    if _post_ja_extraido_localmente(resp_post.text, texto_local):
+                    if dt_card == ultima_data:
+                        if not (eh_night or permitir_mesma_data_nao_extraida):
+                            continue
+                        resp_post = get(url_post, headers={"User-Agent": "Mozilla/5.0"}, timeout=25)
+                        resp_post.raise_for_status()
+                        texto_local = _texto_edicoes_da_data(pasta_resultados, titulo_base, dt_card) if pasta_resultados else ""
+                        if _post_ja_extraido_localmente(resp_post.text, texto_local):
+                            continue
+                        rotulo_ed = "Edição noturna" if eh_night else f"Edição de '{chave}'"
+                        logger.info(
+                            f"[bold cyan]🌐 [Web] {rotulo_ed} de {dt_card:%d/%m/%Y} encontrada no site para '{escape(titulo_base)}' "
+                            f"(ausente no último arquivo local). Baixando...[/bold cyan]"
+                        )
+                        itens.append(_montar_item_de_html(url_post, resp_post.text, filtros_grupo=[chave], data_forcada=dt_card))
                         continue
-                    logger.info(
-                        f"[bold cyan]🌐 [Web] Edição noturna de {dt_card:%d/%m/%Y} encontrada no site para '{escape(titulo_base)}' "
-                        f"(ausente no último arquivo local). Baixando...[/bold cyan]"
-                    )
-                    itens.append(_montar_item_de_html(url_post, resp_post.text, filtros_grupo=[chave], data_forcada=dt_card))
+                elif (datetime.date.today() - dt_card).days > 2:
                     continue
-            elif (datetime.date.today() - dt_card).days > 2:
-                continue
 
             logger.info(
                 f"[bold cyan]🌐 [Web] Edição de {dt_card:%d/%m/%Y} encontrada no site para '{escape(titulo_base)}' "
-                f"(última local: {ultima_data.strftime('%d/%m/%Y') if ultima_data else 'nenhuma'}). Baixando...[/bold cyan]"
+                f"(fonte: {escape(chave)} · última local: {ultima_data.strftime('%d/%m/%Y') if ultima_data else 'nenhuma'}). Baixando...[/bold cyan]"
             )
             itens.append(buscar_email_de_url(url_post, filtros_grupo=[chave], get=get, data_forcada=dt_card))
             continue
 
-        # Quando o card de destaque não exibe a data na vitrine (ex.: AiDrops), inspeciona o cabeçalho do primeiro post
-        if idx == 0 and not itens:
+        # Quando o card da vitrine não exibe a data (ex.: AiDrops, MoneyDrops, TechDrops), inspeciona os 3 posts mais recentes
+        if idx < 3:
             resp_post = get(url_post, headers={"User-Agent": "Mozilla/5.0"}, timeout=25)
             resp_post.raise_for_status()
-            soup_post = BeautifulSoup(resp_post.text, "html.parser")
-            texto_topo = soup_post.get_text(" ", strip=True)[:1500]
-            dt_post = extrair_data_de_texto(texto_topo)
+            dt_post = _extrair_data_html_beehiiv(resp_post.text, url_post)
             if not dt_post:
                 continue
-            if ultima_data and dt_post <= ultima_data:
-                continue
-            if not ultima_data and (datetime.date.today() - dt_post).days > 2:
-                continue
+            eh_necessaria = dt_post in datas_necessarias
+            if eh_necessaria:
+                texto_local = _texto_edicoes_da_data(pasta_resultados, titulo_base, dt_post) if pasta_resultados else ""
+                if _post_ja_extraido_localmente(resp_post.text, texto_local):
+                    continue
+            elif ultima_data:
+                if dt_post < ultima_data:
+                    if not min_necessaria or dt_post < min_necessaria:
+                        break
+                    continue
+                if dt_post == ultima_data:
+                    if not permitir_mesma_data_nao_extraida:
+                        continue
+                    texto_local = _texto_edicoes_da_data(pasta_resultados, titulo_base, dt_post) if pasta_resultados else ""
+                    if _post_ja_extraido_localmente(resp_post.text, texto_local):
+                        continue
+            elif (datetime.date.today() - dt_post).days > 2:
+                break
             logger.info(
                 f"[bold cyan]🌐 [Web] Edição de {dt_post:%d/%m/%Y} encontrada no site para '{escape(titulo_base)}' "
-                f"(última local: {ultima_data.strftime('%d/%m/%Y') if ultima_data else 'nenhuma'}). Baixando...[/bold cyan]"
+                f"(fonte: {escape(chave)} · última local: {ultima_data.strftime('%d/%m/%Y') if ultima_data else 'nenhuma'}). Baixando...[/bold cyan]"
             )
             itens.append(_montar_item_de_html(url_post, resp_post.text, filtros_grupo=[chave], data_forcada=dt_post))
     return itens
@@ -679,17 +904,62 @@ def _verificar_fonte_thepeak(chave, titulo_base, arquivo_url, ultima_data, get=r
     return [_montar_item_de_html(url_edicao, resp_ed.text, filtros_grupo=[chave], data_forcada=dt_ed)]
 
 
+def _datas_par_necessarias(chave, itens_coletados, mapeamento, pares_fontes):
+    """Calcula datas esperadas de `chave` necessárias para parear com itens já coletados da fonte parceira."""
+    necessarias = set()
+    if not pares_fontes or not itens_coletados:
+        return necessarias
+    grupos_tmp = agrupar_emails(itens_coletados, mapeamento)
+    chave_low = chave.lower()
+    for par in pares_fontes:
+        for regra in par.get("regras_pareamento", []):
+            if (regra.get("aguarda") or "").lower() != chave_low:
+                continue
+            origem = (regra.get("fonte") or "").lower()
+            dias = set(regra.get("dias") or ())
+            delta = int(regra.get("delta_dias", 0))
+            for item in grupos_tmp.get(origem, []):
+                dt = _extrair_data_item(item)
+                if dt and dt.weekday() in dias:
+                    necessarias.add(dt + datetime.timedelta(days=delta))
+    return necessarias
+
+
 def buscar_edicoes_faltantes_na_web(
-    emails_atuais, pasta_resultados=None, filtros_grupo=None, fontes_web=None, mapeamento=None, get=requests.get
+    emails_atuais,
+    pasta_resultados=None,
+    filtros_grupo=None,
+    fontes_web=None,
+    mapeamento=None,
+    get=requests.get,
+    caminho_controle_fontes=None,
+    pares_fontes=None,
 ):
     """Dupla verificação: para cada fonte externa sem e-mail não lido hoje, checa no site oficial
-    se saiu edição com data mais recente que o último `.md` salvo em `pasta_resultados`.
+    se saiu edição com data mais recente que o último registro salvo em `controle_fontes.json` / `pasta_resultados`.
     """
     pasta_resultados = pasta_resultados or config.RESULTADOS_DIR
     fontes_web = fontes_web if fontes_web is not None else config.FONTES_WEB
     mapeamento = mapeamento or config.MAPEAMENTO_PREFIXOS
+    pares_fontes = pares_fontes if pares_fontes is not None else config.PARES_FONTES
     if not fontes_web:
         return []
+
+    if caminho_controle_fontes is None:
+        if Path(pasta_resultados).resolve() == Path(config.RESULTADOS_DIR).resolve():
+            caminho_controle_fontes = config.CONTROLE_FONTES_PATH
+        else:
+            caminho_controle_fontes = Path(pasta_resultados) / "controle_fontes.json"
+    controle_fontes = carregar_controle_fontes(caminho_controle_fontes)
+
+    fontes_pareadas = {
+        f.lower() for par in (pares_fontes or []) for f in (par.get("fontes") or [])
+    }
+    parceiros_por_fonte = {}
+    for par in (pares_fontes or []):
+        fs = [f.lower() for f in (par.get("fontes") or [])]
+        for f in fs:
+            parceiros_por_fonte[f] = fs
 
     grupos_map = agrupar_emails(emails_atuais, mapeamento)
     grupos_presentes = set(grupos_map.keys())
@@ -699,16 +969,38 @@ def buscar_edicoes_faltantes_na_web(
     recuperados = []
     for chave, cfg_web in fontes_web.items():
         titulo_base = mapeamento.get(chave, chave)
-        if filtros_grupo and not any(
-            f.lower() in chave.lower() or f.lower() in titulo_base.lower() for f in filtros_grupo
-        ):
-            continue
+        chave_low = chave.lower()
+        if filtros_grupo:
+            termos_match = [chave_low, titulo_base.lower()] + parceiros_por_fonte.get(chave_low, [])
+            for alias, dest in _ALIASES_PREFIXO.items():
+                if dest in termos_match:
+                    termos_match.append(alias)
+            if not any(f.lower() in termo for f in filtros_grupo for termo in termos_match):
+                continue
+
         emails_grupo = grupos_map.get(chave, [])
+        eh_pareada = chave_low in fontes_pareadas
         esperado_dia = 2 if chave == "the news" else 1
-        if len(emails_grupo) >= esperado_dia or (esperado_dia == 1 and titulo_base in titulos_presentes):
+        if len(emails_grupo) >= esperado_dia:
+            continue
+        if not eh_pareada and esperado_dia == 1 and titulo_base in titulos_presentes:
             continue
 
-        ultima_data = ultima_data_extraida_local(pasta_resultados, titulo_base)
+        reg_fonte = controle_fontes.get(chave_low) or {}
+        ultima_data_str = reg_fonte.get("ultima_data") or ""
+        ultima_data = None
+        if ultima_data_str:
+            try:
+                ultima_data = datetime.date.fromisoformat(ultima_data_str)
+            except ValueError:
+                ultima_data = None
+        if ultima_data is None:
+            ultima_data = ultima_data_extraida_local(pasta_resultados, titulo_base)
+
+        urls_processadas = set(reg_fonte.get("urls") or ())
+        datas_necessarias = _datas_par_necessarias(chave_low, list(emails_atuais) + recuperados, mapeamento, pares_fontes)
+        permitir_mesma_data = eh_pareada and not reg_fonte
+
         tipo = (cfg_web.get("tipo") or "").lower()
         arquivo_url = cfg_web.get("arquivo_url") or ""
         if not arquivo_url:
@@ -716,7 +1008,9 @@ def buscar_edicoes_faltantes_na_web(
 
         try:
             if tipo == "thenews":
-                novos = _verificar_fonte_thenews(chave, titulo_base, arquivo_url, ultima_data, get=get)
+                novos = _verificar_fonte_thenews(
+                    chave, titulo_base, arquivo_url, ultima_data, get=get, datas_necessarias=datas_necessarias
+                )
             elif tipo == "beehiiv":
                 novos = _verificar_fonte_beehiiv(
                     chave,
@@ -726,6 +1020,9 @@ def buscar_edicoes_faltantes_na_web(
                     get=get,
                     pasta_resultados=pasta_resultados,
                     emails_atuais_grupo=emails_grupo,
+                    urls_processadas=urls_processadas,
+                    datas_necessarias=datas_necessarias,
+                    permitir_mesma_data_nao_extraida=permitir_mesma_data,
                 )
             elif tipo == "thepeak":
                 novos = _verificar_fonte_thepeak(chave, titulo_base, arquivo_url, ultima_data, get=get)
@@ -737,7 +1034,7 @@ def buscar_edicoes_faltantes_na_web(
 
         if novos:
             recuperados.extend(novos)
-            if len(emails_grupo) + len(novos) >= esperado_dia:
+            if not eh_pareada and len(emails_grupo) + len(novos) >= esperado_dia:
                 titulos_presentes.add(titulo_base)
 
     if not recuperados:
@@ -1181,10 +1478,10 @@ def inserir_apos_h1(corpo, bloco_extra):
     return f"{extra_limpo}{SEPARADOR}{corpo_limpo}"
 
 
-def aplicar_cabecalho_edicao(texto, nome_final):
-    """Inclui o nome do programa e o número da edição no cabeçalho H1 do topo para o NotebookLM:
+def aplicar_cabecalho_edicao(texto, nome_final, idioma="pt"):
+    """Inclui nome do programa, número da edição e dia da semana no cabeçalho H1 do topo para o NotebookLM:
     Ex.: '# 10 de novembro de 2026' + 'Controle Quebrado #274.md'
-      -> '# Controle Quebrado #274 — 10 de novembro de 2026'
+      -> '# Controle Quebrado #274 — terça-feira, 10 de novembro de 2026'
     """
     if not texto or not nome_final:
         return texto
@@ -1196,8 +1493,15 @@ def aplicar_cabecalho_edicao(texto, nome_final):
     if m:
         h1_atual = m.group(1).strip()
         resto = m.group(2)
+        re_dia = _RE_DIA_SEMANA_EN if idioma == "en" else _RE_DIA_SEMANA_PT
+        dt = extrair_data_de_texto(h1_atual)
         if h1_atual.lower().startswith(identificador.lower()):
+            if dt and not re_dia.search(h1_atual):
+                data_fmt = formatar_data_com_dia_semana(dt, idioma=idioma)
+                return f"# {identificador} — {data_fmt}{resto}"
             return texto_limpo
+        if dt and not re_dia.search(h1_atual):
+            h1_atual = formatar_data_com_dia_semana(dt, idioma=idioma)
         return f"# {identificador} — {h1_atual}{resto}"
     return f"# {identificador}\n\n{texto_limpo}"
 
@@ -1290,6 +1594,10 @@ class Pipeline:
         self.pasta_saida = config.DRY_RUN_DIR if opcoes.dry_run else config.RESULTADOS_DIR
         self.pasta_historico = config.RESULTADOS_DIR
         self.caminho_controle_noticias = config.CONTROLE_NOTICIAS_PATH
+        self.caminho_controle_fontes = config.CONTROLE_FONTES_PATH
+        self.pares_fontes = config.PARES_FONTES
+        self.em_standby = []
+        self._hoje_ref = None
         self._lock_pendentes = threading.Lock()
         self._nao_iniciados = 0
         self._progress = None
@@ -1315,56 +1623,261 @@ class Pipeline:
     def _perguntar(self, mensagem):
         return input(mensagem) if self.opcoes.interativo else ""
 
+    def _proximo_nome_edicao(self, titulo_base, prox_por_titulo):
+        if titulo_base in prox_por_titulo:
+            numero = str(prox_por_titulo[titulo_base])
+            prox_por_titulo[titulo_base] += 1
+            logger.info(f"[bold green]▶ Número da edição automatizado (sequencial): {numero}[/bold green]")
+            return f"{titulo_base} #{numero}.md"
+        maior = maior_edicao_existente(self.pasta_historico, titulo_base)
+        if maior > 0:
+            numero = str(maior + 1)
+            prox_por_titulo[titulo_base] = maior + 2
+            logger.info(f"[bold green]▶ Número da edição automatizado: {numero} (última encontrada: {maior})[/bold green]")
+        else:
+            numero = self._perguntar(f"▶ Qual o número da edição para '{titulo_base}'? ").strip()
+            if not numero:
+                numero = time.strftime("%Y%m%d")
+                logger.info(f"[yellow]▶ Sem número informado. Usando a data: {numero}[/yellow]")
+            elif numero.isdigit():
+                prox_por_titulo[titulo_base] = int(numero) + 1
+        return f"{titulo_base} #{numero}.md"
+
+    def _corresponde_filtro(self, chaves, titulo_base):
+        if not self.opcoes.grupos:
+            return True
+        termos = [titulo_base.lower()] + [c.lower() for c in chaves]
+        for alias, dest in _ALIASES_PREFIXO.items():
+            if dest in termos:
+                termos.append(alias)
+        return any(f.lower() in termo for f in self.opcoes.grupos for termo in termos)
+
+    def _decidir_unificar(self, titulo_base, emails_grupo, forcar_auto=False):
+        if len(emails_grupo) < 2:
+            return False
+        if self.opcoes.unificar == "nao":
+            return False
+        if forcar_auto or self.opcoes.unificar == "sim":
+            return True
+        if self.opcoes.unificar == "perguntar" and self.opcoes.interativo:
+            resposta = self._perguntar(
+                f"▶ {len(emails_grupo)} e-mails para '{titulo_base}'. Unificar de forma inteligente "
+                f"em um único texto (mesclando assuntos e evitando repetições)? (S/N): "
+            )
+            return resposta.strip().lower() == "s"
+        return False
+
+    def _preparar_grupos_pareados(self, grupos, prox_por_titulo):
+        """Agrupa fontes pareadas (ex.: tns money+moneydrops, techdrops+tns business), aplicando stand by e dedup."""
+        hoje = self._hoje_ref or datetime.date.today()
+        configs_par = []
+        chaves_consumidas = set()
+
+        for par in (self.pares_fontes or []):
+            titulo_base = par.get("titulo") or ""
+            fontes_par = [f.lower() for f in (par.get("fontes") or [])]
+            if not titulo_base or not fontes_par:
+                continue
+            chaves_consumidas.update(fontes_par)
+
+            itens = []
+            for f in fontes_par:
+                for e in grupos.get(f, []):
+                    e.setdefault("fonte_chave", f)
+                    dt_item = _extrair_data_item(e) or hoje
+                    itens.append((f, e, dt_item))
+            if not itens or not self._corresponde_filtro(fontes_par, titulo_base):
+                continue
+
+            ordem_fonte = {f: idx for idx, f in enumerate(fontes_par)}
+            itens.sort(key=lambda trio: (trio[2], ordem_fonte.get(trio[0], 99), _chave_cronologica_email(trio[1])))
+            regras = par.get("regras_pareamento") or []
+            expira_dias = int(par.get("expirar_standby_dias", 1))
+            cfg_evitar = par.get("evitar_repeticao_com_ultima_edicao") or {}
+
+            def buscar_regra(fonte, dt):
+                return next(
+                    (r for r in regras if (r.get("fonte") or "").lower() == fonte and dt.weekday() in (r.get("dias") or [])),
+                    None,
+                )
+
+            usados = set()
+            # 1ª passagem: monta pares completos (fonte A + fonte B na data esperada)
+            for i, (f1, e1, d1) in enumerate(itens):
+                if i in usados:
+                    continue
+                regra = buscar_regra(f1, d1)
+                if not regra:
+                    continue
+                alvo_f = (regra.get("aguarda") or "").lower()
+                alvo_d = d1 + datetime.timedelta(days=int(regra.get("delta_dias", 0)))
+                indices_par = [i]
+                achou_parceiro = False
+                for j, (f2, _, d2) in enumerate(itens):
+                    if j == i or j in usados:
+                        continue
+                    if f2 == alvo_f and d2 == alvo_d:
+                        indices_par.append(j)
+                        achou_parceiro = True
+                    elif f2 == f1 and d2 == d1:
+                        indices_par.append(j)
+                if achou_parceiro:
+                    for idx_u in indices_par:
+                        usados.add(idx_u)
+                    lote = [itens[idx_u] for idx_u in indices_par]
+                    lote.sort(key=lambda trio: (trio[2], ordem_fonte.get(trio[0], 99), _chave_cronologica_email(trio[1])))
+                    emails_lote = [trio[1] for trio in lote]
+                    chaves_lote = list(dict.fromkeys(trio[0] for trio in lote))
+                    logger.info(
+                        f"\n[bold magenta]🔗 Par completo para {escape(titulo_base)}: "
+                        f"{' + '.join(chaves_lote)} ({len(emails_lote)} item(ns))[/bold magenta]"
+                    )
+                    nome_final = self._proximo_nome_edicao(titulo_base, prox_por_titulo)
+                    unificar = self._decidir_unificar(titulo_base, emails_lote, forcar_auto=True)
+                    configs_par.append(
+                        ConfigGrupo(
+                            chaves_lote[0],
+                            emails_lote,
+                            titulo_base,
+                            nome_final,
+                            unificar=unificar,
+                            chaves_fontes=chaves_lote,
+                        )
+                    )
+
+            # 2ª passagem: itens sem par (saem sozinhos nos dias avulsos, entram em stand by ou expiram)
+            for i, (f1, e1, d1) in enumerate(itens):
+                if i in usados:
+                    continue
+                usados.add(i)
+                emails_solo = [e1]
+                for j, (f2, e2, d2) in enumerate(itens):
+                    if j not in usados and f2 == f1 and d2 == d1:
+                        usados.add(j)
+                        emails_solo.append(e2)
+
+                regra = buscar_regra(f1, d1)
+                if regra:
+                    alvo_f = (regra.get("aguarda") or "").lower()
+                    alvo_d = d1 + datetime.timedelta(days=int(regra.get("delta_dias", 0)))
+                    expirado = (hoje - alvo_d).days >= expira_dias
+                    if not (self.opcoes.forcar_pares or expirado):
+                        expira_em = alvo_d + datetime.timedelta(days=expira_dias)
+                        self.em_standby.append(
+                            ItemStandBy(
+                                titulo_base=titulo_base,
+                                fonte_recebida=f1,
+                                data_recebida=d1,
+                                aguardando=alvo_f,
+                                data_esperada=alvo_d,
+                                expira_em=expira_em,
+                            )
+                        )
+                        logger.info(
+                            f"[yellow]⏸ {escape(titulo_base)} em stand by: chegou '{escape(f1)}' ({d1:%d/%m}), "
+                            f"aguardando '{escape(alvo_f)}' ({alvo_d:%d/%m}). E-mail mantido não lido.[/yellow]"
+                        )
+                        continue
+                    motivo = "--forcar-pares" if self.opcoes.forcar_pares else f"stand by expirado ({alvo_f} de {alvo_d:%d/%m} não saiu)"
+                    logger.info(
+                        f"\n[yellow]⏰ Liberando {escape(titulo_base)} ({escape(f1)} {d1:%d/%m}) sem par: {escape(motivo)}[/yellow]"
+                    )
+                else:
+                    logger.info(
+                        f"\n[bold magenta]Encontrados {len(emails_solo)} item(ns) avulso(s) para: "
+                        f"{escape(titulo_base)} ({escape(f1)})[/bold magenta]"
+                    )
+
+                contexto_ant = ""
+                if (
+                    cfg_evitar
+                    and (cfg_evitar.get("fonte") or "").lower() == f1
+                    and d1.weekday() in (cfg_evitar.get("dias") or [])
+                ):
+                    contexto_ant = montar_contexto_edicao_anterior(
+                        self.pasta_historico,
+                        titulo_base,
+                        d1,
+                        janela_dias=int(cfg_evitar.get("janela_dias", 2)),
+                    )
+                    if contexto_ant:
+                        logger.info(
+                            f"[cyan]🧹 Filtro anti-repetição ativo para {escape(titulo_base)} ({escape(f1)} sexta): "
+                            f"evitando pautas já cobertas na edição anterior[/cyan]"
+                        )
+
+                nome_final = self._proximo_nome_edicao(titulo_base, prox_por_titulo)
+                unificar = self._decidir_unificar(titulo_base, emails_solo, forcar_auto=False)
+                configs_par.append(
+                    ConfigGrupo(
+                        f1,
+                        emails_solo,
+                        titulo_base,
+                        nome_final,
+                        unificar=unificar,
+                        chaves_fontes=[f1],
+                        contexto_edicao_anterior=contexto_ant,
+                    )
+                )
+
+        return configs_par, chaves_consumidas
+
     def preparar_grupos(self, emails):
+        self.em_standby = []
         grupos = agrupar_emails(emails, config.MAPEAMENTO_PREFIXOS)
-        configs = []
+        prox_por_titulo = {}
+        configs, chaves_pareadas = self._preparar_grupos_pareados(grupos, prox_por_titulo)
+
         for chave, emails_grupo in grupos.items():
+            if chave.lower() in chaves_pareadas:
+                continue
+            for e in emails_grupo:
+                e.setdefault("fonte_chave", chave)
             if chave in config.MAPEAMENTO_PREFIXOS:
                 titulo_base = config.MAPEAMENTO_PREFIXOS[chave]
             else:
                 titulo_base, nome_final = nome_fallback(chave)
 
-            if self.opcoes.grupos and not any(
-                f.lower() in chave or f.lower() in titulo_base.lower() for f in self.opcoes.grupos
-            ):
+            if not self._corresponde_filtro([chave], titulo_base):
                 continue
 
             if chave in config.MAPEAMENTO_PREFIXOS:
                 logger.info(f"\n[bold magenta]Encontrados {len(emails_grupo)} e-mail(s) para: {escape(titulo_base)}[/bold magenta]")
-                maior = maior_edicao_existente(config.RESULTADOS_DIR, titulo_base)
-                if maior > 0:
-                    numero = str(maior + 1)
-                    logger.info(f"[bold green]▶ Número da edição automatizado: {numero} (última encontrada: {maior})[/bold green]")
-                else:
-                    numero = self._perguntar(f"▶ Qual o número da edição para '{titulo_base}'? ").strip()
-                    if not numero:
-                        numero = time.strftime("%Y%m%d")
-                        logger.info(f"[yellow]▶ Sem número informado. Usando a data: {numero}[/yellow]")
-                nome_final = f"{titulo_base} #{numero}.md"
+                nome_final = self._proximo_nome_edicao(titulo_base, prox_por_titulo)
 
-            unificar = False
-            if len(emails_grupo) >= 2:
-                emails_grupo.sort(key=_chave_cronologica_email)
-                if self.opcoes.unificar == "sim":
-                    unificar = True
-                elif self.opcoes.unificar == "perguntar" and self.opcoes.interativo:
-                    resposta = self._perguntar(
-                        f"▶ {len(emails_grupo)} e-mails para '{titulo_base}'. Unificar de forma inteligente "
-                        f"em um único texto (mesclando assuntos e evitando repetições)? (S/N): "
-                    )
-                    unificar = resposta.strip().lower() == "s"
-
-            configs.append(ConfigGrupo(chave, emails_grupo, titulo_base, nome_final, unificar))
+            emails_grupo.sort(key=_chave_cronologica_email)
+            unificar = self._decidir_unificar(titulo_base, emails_grupo, forcar_auto=False)
+            configs.append(ConfigGrupo(chave, emails_grupo, titulo_base, nome_final, unificar, chaves_fontes=[chave]))
         return configs
 
     # -- extração --
-    def _montar_prompt(self, chave, unificar=False):
+    def _montar_prompt(self, chave, unificar=False, chaves_fontes=None, contexto_edicao_anterior=""):
         partes = [self.prompt_base]
-        dica = config.DICAS_POR_PREFIXO.get((chave or "").lower())
-        if dica:
-            partes.append(f"<diretrizes_especificas_desta_fonte>\n{dica}\n</diretrizes_especificas_desta_fonte>")
+        chaves_todas = list(dict.fromkeys((c or "").lower() for c in (chaves_fontes or [chave]) if c))
+        dicas = []
+        for c in chaves_todas:
+            dica = config.DICAS_POR_PREFIXO.get(c)
+            if dica:
+                prefixo_dica = f"[{c}] " if len(chaves_todas) > 1 else ""
+                dicas.append(f"{prefixo_dica}{dica}")
+        if dicas:
+            bloco_dicas = "\n\n".join(dicas)
+            partes.append(f"<diretrizes_especificas_desta_fonte>\n{bloco_dicas}\n</diretrizes_especificas_desta_fonte>")
         if unificar:
             partes.append(self.prompt_unificacao)
+        if contexto_edicao_anterior:
+            partes.append(
+                "<evitar_repeticao_edicao_anterior>\n"
+                "ATENÇÃO — EVITAR REPETIÇÃO COM A EDIÇÃO RECENTE ANTERIOR DESTE PROGRAMA:\n"
+                f"{contexto_edicao_anterior}\n\n"
+                "REGRAS ESTRITAS:\n"
+                "1. Se alguma matéria da fonte de hoje tratar do MESMO fato/acontecimento já coberto nessa edição anterior "
+                "sem novidade relevante, DESCARTE essa matéria repetida por completo (não reescreva nem resuma).\n"
+                "2. Se houver um desdobramento genuinamente novo sobre tema de ontem, extraia APENAS a novidade em si.\n"
+                "3. Extraia na íntegra TODAS as demais notícias inéditas e o quadro inicial ('Hoje eu aprendi', se houver).\n"
+                "4. Se a edição inteira só tiver assuntos repetidos, responda APENAS com `[SEM_CONTEUDO_EDITORIAL]`.\n"
+                "</evitar_repeticao_edicao_anterior>"
+            )
         return "\n\n".join(partes)
 
     @staticmethod
@@ -1595,16 +2108,26 @@ class Pipeline:
                 )
 
         textos, emails_ok, entradas, itens_extraidos_ok = [], [], [], []
+        chaves_fontes = cfg.chaves_fontes or [cfg.chave]
         if cfg.unificar and len(emails_para_extrair) >= 2:
+            def _rotulo_edicao(idx, item):
+                fk = (item.get("fonte_chave") or "").strip()
+                return f"--- INÍCIO DA EDIÇÃO {idx} ({fk}) ---" if fk and len(chaves_fontes) > 1 else f"--- INÍCIO DA EDIÇÃO {idx} ---"
+
             partes_edicoes = "".join(
-                f"\n\n--- INÍCIO DA EDIÇÃO {i + 1} ---\n\n{self._preparar(e, idioma=idioma, envolver_documento=False)}"
+                f"\n\n{_rotulo_edicao(i + 1, e)}\n\n{self._preparar(e, idioma=idioma, envolver_documento=False)}"
                 for i, (e, _) in enumerate(emails_para_extrair)
             ).strip()
             combinado = f"<documento_entrada>\n{partes_edicoes}\n</documento_entrada>"
             entradas.append(combinado)
             logger.info(f"[cyan]🤖 Enviando {len(emails_para_extrair)} e-mails agrupados para extração unificada...[/cyan]")
             self._etapa(cfg, "🤖 extraindo com IA (unificado)", 1)
-            prompt_grupo = self._montar_prompt(cfg.chave, unificar=True)
+            prompt_grupo = self._montar_prompt(
+                cfg.chave,
+                unificar=True,
+                chaves_fontes=chaves_fontes,
+                contexto_edicao_anterior=cfg.contexto_edicao_anterior,
+            )
             texto = self._extrair(combinado, prompt_grupo, cfg.titulo_base, cfg)
             if texto:
                 textos.append(texto)
@@ -1612,7 +2135,12 @@ class Pipeline:
                     emails_ok.append(e)
                     itens_extraidos_ok.extend(mantidas)
         else:
-            prompt_grupo = self._montar_prompt(cfg.chave, unificar=False)
+            prompt_grupo = self._montar_prompt(
+                cfg.chave,
+                unificar=False,
+                chaves_fontes=chaves_fontes,
+                contexto_edicao_anterior=cfg.contexto_edicao_anterior,
+            )
             n_ext = len(emails_para_extrair)
             for i, (email_item, mantidas) in enumerate(emails_para_extrair):
                 conteudo = self._preparar(email_item, idioma=idioma)
@@ -1639,13 +2167,15 @@ class Pipeline:
                 f"[bold yellow]⚠ E-mail(s) sem conteúdo editorial válido ({len(corpo_editorial)} caracteres). "
                 f"Edição descartada para não gerar arquivo vazio.[/bold yellow]"
             )
-            if not self.opcoes.dry_run and self.gmail:
-                for email_item in emails_ok + emails_so_duplicados:
-                    if email_item.get("id"):
-                        marcar_como_lido(self.gmail, email_item["id"])
+            if not self.opcoes.dry_run:
+                registrar_fontes_processadas(emails_ok + emails_so_duplicados, cfg.chave, self.caminho_controle_fontes)
+                if self.gmail:
+                    for email_item in emails_ok + emails_so_duplicados:
+                        if email_item.get("id"):
+                            marcar_como_lido(self.gmail, email_item["id"])
             self._etapa(cfg, "[yellow]⏭ ignorado (sem notícias)[/yellow]", ETAPAS_GRUPO)
-            return ResultadoGrupo(nome, "ignorado", f"⏭️ {cfg.nome_final} ignorado (e-mail promocional/administrativo sem notícias)",
-                                  "Ignorado: e-mail sem notícias", time.time() - inicio)
+            return ResultadoGrupo(nome, "ignorado", f"⏭️ {cfg.nome_final} ignorado (e-mail promocional/administrativo ou repetido sem novidades)",
+                                  "Ignorado: sem notícias novas", time.time() - inicio)
 
         if resultados_futebol and "## RESULTADOS RECENTES" in resultados_futebol:
             final = sanitizar_markdown_final(inserir_apos_h1(corpo_editorial, resultados_futebol), consolidar=False)
@@ -1706,9 +2236,10 @@ class Pipeline:
             reparar=reparar_com_ia if self.extrator else None,
             notificar=notificar_verificacao,
             revisar_estrutura=revisar_estrutura,
+            contexto_edicao_anterior=cfg.contexto_edicao_anterior,
         )
         final = consolidar_secoes_mesmo_assunto(final)
-        final = aplicar_cabecalho_edicao(final, cfg.nome_final)
+        final = aplicar_cabecalho_edicao(final, cfg.nome_final, idioma=idioma)
         console.print(renderizar_relatorio(relatorio, nome))
         log_arquivo.info(f"Dupla verificação · {nome} · {relatorio.resumo}\n{relatorio.como_texto()}")
         noticias = contar_noticias(final)
@@ -1749,6 +2280,7 @@ class Pipeline:
                 logger.warning(f"[yellow]⚠ Erro ao salvar controle do futebol: {escape(str(e))}[/yellow]")
 
         self._etapa(cfg, "☁ enviando ao Drive e marcando e-mails", 5)
+        registrar_fontes_processadas(emails_ok + emails_so_duplicados, cfg.chave, self.caminho_controle_fontes)
         if self.drive:
             upload_para_drive(self.drive, caminho, cfg.nome_final)
         if self.gmail:
@@ -1863,6 +2395,17 @@ def _resumo_datas_grupo(emails):
     return ", ".join(vistos[:3]) + ("…" if len(vistos) > 3 else "")
 
 
+def _painel_standby(itens_standby):
+    linhas = []
+    for item in itens_standby:
+        linhas.append(
+            f"⏸ [bold]{escape(item.titulo_base)}[/bold]: chegou [cyan]{escape(item.fonte_recebida)}[/cyan] "
+            f"({item.data_recebida:%d/%m}), aguardando [cyan]{escape(item.aguardando)}[/cyan] ({item.data_esperada:%d/%m}) "
+            f"[dim]· libera sozinho em {item.expira_em:%d/%m} ou com --forcar-pares[/dim]"
+        )
+    return Panel("\n".join(linhas), title="⏸ Em stand by (aguardando par)", title_align="left", border_style="yellow", expand=False)
+
+
 def _tabela_plano(configs):
     tabela = Table(
         title="🗂  Plano de extração",
@@ -1881,8 +2424,20 @@ def _tabela_plano(configs):
     tabela.add_column("Idioma", justify="center")
     for i, cfg in enumerate(configs, 1):
         da_web = any(not e.get("id") for e in cfg.emails)
-        fonte = "🌐 site oficial" if da_web else "📧 Gmail"
-        modo = "🔗 unificado" if cfg.unificar else ("✂ separado" if len(cfg.emails) > 1 else "📄 único")
+        do_gmail = any(e.get("id") for e in cfg.emails)
+        if da_web and do_gmail:
+            fonte = "📧+🌐 Gmail + site"
+        elif da_web:
+            fonte = "🌐 site oficial"
+        else:
+            fonte = "📧 Gmail"
+        chaves_f = cfg.chaves_fontes or [cfg.chave]
+        if len(chaves_f) > 1:
+            modo = f"🔗 par ({' + '.join(chaves_f)})"
+        elif cfg.contexto_edicao_anterior:
+            modo = "🧹 único (sem rep.)"
+        else:
+            modo = "🔗 unificado" if cfg.unificar else ("✂ separado" if len(cfg.emails) > 1 else "📄 único")
         idioma = "🇬🇧 EN" if (cfg.chave or "").lower() in config.PREFIXOS_INGLES else "🇧🇷 PT"
         tabela.add_row(
             str(i),
@@ -1988,8 +2543,12 @@ def executar(opcoes):
     pipeline = Pipeline(opcoes, extrator, drive_service, gmail_service)
     console.rule("[bold cyan]③ Planejamento · agrupando por programa e numerando edições[/bold cyan]")
     configs = pipeline.preparar_grupos(emails)
+    if pipeline.em_standby:
+        console.print()
+        console.print(_painel_standby(pipeline.em_standby))
     if not configs:
-        logger.info("[yellow]Nenhum grupo corresponde aos filtros informados.[/yellow]")
+        if not pipeline.em_standby:
+            logger.info("[yellow]Nenhum grupo corresponde aos filtros informados.[/yellow]")
         return 0
     console.print()
     console.print(_tabela_plano(configs))
