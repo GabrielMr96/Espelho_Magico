@@ -21,6 +21,8 @@ Graças a isso, **você não precisa editar o nome do programa nem o número da 
 | [`podcast_en_the_out_of_order_dispatch.md`](./podcast_en_the_out_of_order_dispatch.md) | **Áudio completo** (Audio Overview) | **Programa em Inglês:**<br>• *The Out of Order Dispatch* |
 | [`video_curto_pt_br_universal.md`](./video_curto_pt_br_universal.md) | **Vídeo curto ~1 min vertical 9:16** (Video Overview — Instagram Stories e Status do WhatsApp) | **Todos os programas em Português** (narração feminina única com chamada dinâmica para o episódio completo) |
 | [`legenda_instagram_pt_br_universal.md`](./legenda_instagram_pt_br_universal.md) | **Legenda para Instagram Reels** (Chat do NotebookLM) | **Todos os programas em Português** (copy pronta anti-shadowban, polarização adaptada ao tema e 4 hashtags) |
+| [`spotify_pt_br_universal.md`](./spotify_pt_br_universal.md) | **Título e descrição Spotify** (Chat do NotebookLM) | **Todos os programas em Português** (título SEO ≤ 95 chars + descrição pronta em bloco `text`) |
+| [`spotify_en_the_out_of_order_dispatch.md`](./spotify_en_the_out_of_order_dispatch.md) | **Spotify title & description** (NotebookLM Chat) | **Programa em Inglês:** *The Out of Order Dispatch* (Canadian English, SEO ≤ 95 chars + bloco `text`) |
 
 ## Duração recomendada no NotebookLM
 
