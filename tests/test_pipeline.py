@@ -1020,6 +1020,98 @@ def test_integridade_aceita_descarte_de_pauta_repetida_da_edicao_anterior():
     assert not rel.tem_aviso
 
 
+def test_boletim_night_sozinha_pergunta_e_respeita_standby(tmp_path):
+    (tmp_path / "Boletim Fora de Ordem #331.md").write_text(
+        "# Boletim Fora de Ordem #331 — quinta-feira, 26 de novembro de 2026\n",
+        encoding="utf-8",
+    )
+    email_night = {
+        "id": None,
+        "assunto": "the news: NIGHT #359",
+        "remetente": "the news",
+        "data": "Thu, 26 Nov 2026 09:00:00 +0000",
+        "url": "https://thenewscc.beehiiv.com/p/night-359",
+        "conteudo_html": "<p>Noite</p>",
+    }
+    email_manha = {
+        "id": "m27",
+        "assunto": "the news: Hollow Knight ganha sequência",
+        "remetente": "the news",
+        "data": "Fri, 27 Nov 2026 06:00:00 -0300",
+        "conteudo_html": "<p>Manhã</p>",
+    }
+
+    def make_pipe(hoje, interativo=True, forcar_pares=False, urls=None, resposta=""):
+        pipe = Pipeline(
+            Opcoes(dry_run=True, interativo=interativo, forcar_pares=forcar_pares, urls=urls or []),
+            extrator=None,
+            drive_service=None,
+            gmail_service=None,
+        )
+        pipe.pasta_historico = tmp_path
+        pipe._hoje_ref = hoje
+        pipe._perguntas = []
+
+        def fake_perguntar(msg):
+            pipe._perguntas.append(msg)
+            return resposta
+
+        pipe._perguntar = fake_perguntar
+        return pipe
+
+    # Interativo respondendo Enter/N -> entra em stand by aguardando 27/11
+    pipe_aguardar = make_pipe(datetime.date(2026, 11, 26), interativo=True, resposta="")
+    cfgs = pipe_aguardar.preparar_grupos([dict(email_night)])
+    assert cfgs == []
+    assert len(pipe_aguardar._perguntas) == 1
+    assert "edição noturna (26/11)" in pipe_aguardar._perguntas[0]
+    assert "27/11" in pipe_aguardar._perguntas[0]
+    assert len(pipe_aguardar.em_standby) == 1
+    assert pipe_aguardar.em_standby[0].titulo_base == "Boletim Fora de Ordem"
+    assert pipe_aguardar.em_standby[0].data_esperada == datetime.date(2026, 11, 27)
+
+    # Interativo respondendo 's' -> extrai sozinha imediatamente como #332
+    pipe_sim = make_pipe(datetime.date(2026, 11, 26), interativo=True, resposta="s")
+    cfgs_sim = pipe_sim.preparar_grupos([dict(email_night)])
+    assert len(cfgs_sim) == 1 and not pipe_sim.em_standby
+    assert cfgs_sim[0].nome_final == "Boletim Fora de Ordem #332.md"
+    assert len(pipe_sim._perguntas) == 1
+
+    # --forcar-pares -> extrai imediatamente sem perguntar
+    pipe_forcar = make_pipe(datetime.date(2026, 11, 26), interativo=True, forcar_pares=True)
+    cfgs_forcar = pipe_forcar.preparar_grupos([dict(email_night)])
+    assert len(cfgs_forcar) == 1 and not pipe_forcar._perguntas
+
+    # --url explícita -> extrai imediatamente sem perguntar
+    pipe_url = make_pipe(
+        datetime.date(2026, 11, 26),
+        interativo=True,
+        urls=["https://thenewscc.beehiiv.com/p/night-359"],
+    )
+    cfgs_url = pipe_url.preparar_grupos([dict(email_night)])
+    assert len(cfgs_url) == 1 and not pipe_url._perguntas
+
+    # Não interativo (--sem-interacao): antes de expirar entra em stand by; após 1 dia da manhã esperada libera
+    pipe_auto = make_pipe(datetime.date(2026, 11, 26), interativo=False)
+    assert pipe_auto.preparar_grupos([dict(email_night)]) == []
+    assert len(pipe_auto.em_standby) == 1
+
+    pipe_exp = make_pipe(datetime.date(2026, 11, 28), interativo=False)
+    cfgs_exp = pipe_exp.preparar_grupos([dict(email_night)])
+    assert len(cfgs_exp) == 1 and not pipe_exp.em_standby
+
+    # Par completo (NIGHT + manhã) e edição matinal com 'Knight' no assunto -> NÃO perguntam sobre NIGHT sozinha
+    pipe_par = make_pipe(datetime.date(2026, 11, 27), interativo=True, resposta="n")
+    cfgs_par = pipe_par.preparar_grupos([dict(email_night), dict(email_manha)])
+    assert len(cfgs_par) == 1 and not pipe_par.em_standby
+    assert not any("edição noturna" in p for p in pipe_par._perguntas)
+
+    pipe_manha = make_pipe(datetime.date(2026, 11, 27), interativo=True, resposta="n")
+    cfgs_manha = pipe_manha.preparar_grupos([dict(email_manha)])
+    assert len(cfgs_manha) == 1 and not pipe_manha.em_standby and not pipe_manha._perguntas
+
+
+
 
 
 

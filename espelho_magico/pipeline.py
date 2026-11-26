@@ -23,7 +23,9 @@ from . import config, futebol
 from .deduplicacao import (
     carregar_historico_noticias,
     deve_deduplicar_noticias,
+    extrair_noticias_email,
     filtrar_email_noticias_repetidas,
+    normalizar_chave_url,
     registrar_noticias_extraidas,
 )
 from .drive_client import upload_para_drive
@@ -38,6 +40,7 @@ from .llm import (
     verificar_completude,
 )
 from .log import console, contexto_grupo, escape, log_arquivo, logger
+from .rss_client import coletar_feed_rss, janela_horaria_liberada
 from .validacao import _numeros, aplicar_dupla_verificacao, contar_noticias, renderizar_relatorio
 
 SEPARADOR = "\n\n---\n\n"
@@ -323,6 +326,24 @@ def _inferir_data_de_url(url, html="", data_forcada=None):
     return email.utils.format_datetime(datetime.datetime.now(datetime.timezone.utc))
 
 
+_RE_NIGHT = re.compile(r"(?<![a-z])night(?![a-z])", re.I)
+
+
+def _eh_edicao_night(email_item):
+    """Identifica se um item de 'the news' corresponde à edição noturna (NIGHT)."""
+    if not email_item:
+        return False
+    ass = (email_item.get("assunto") or "").lower()
+    rem = (email_item.get("remetente") or "").lower()
+    url = (email_item.get("url") or "").lower()
+    return (
+        bool(_RE_NIGHT.search(ass))
+        or bool(_RE_NIGHT.search(rem))
+        or "🌖" in ass
+        or "/p/night" in url
+    )
+
+
 def _chave_cronologica_email(e):
     """Ordena e-mails do grupo em ordem cronológica crescente (noite anterior antes da manhã de hoje)."""
     fuso_brt = datetime.timezone(datetime.timedelta(hours=-3))
@@ -333,9 +354,7 @@ def _chave_cronologica_email(e):
     except Exception:
         dt = datetime.datetime.max.replace(tzinfo=datetime.timezone.utc)
         dt_brt = dt
-    ass = (e.get("assunto") or "").lower()
-    rem = (e.get("remetente") or "").lower()
-    eh_night = 1 if ("night" in ass or "night" in rem or "🌖" in ass) else 0
+    eh_night = 1 if _eh_edicao_night(e) else 0
     return (dt_brt.date(), eh_night, dt)
 
 
@@ -762,13 +781,8 @@ def _verificar_fonte_beehiiv(
     if not cards:
         return []
 
-    def eh_item_night(e):
-        rem = e.get("remetente", "").lower()
-        ass = e.get("assunto", "").lower()
-        return "night" in rem or "night" in ass or "🌖" in ass
-
-    tem_night_gmail = any(eh_item_night(e) for e in (emails_atuais_grupo or []))
-    tem_manha_gmail = any(not eh_item_night(e) for e in (emails_atuais_grupo or []))
+    tem_night_gmail = any(_eh_edicao_night(e) for e in (emails_atuais_grupo or []))
+    tem_manha_gmail = any(not _eh_edicao_night(e) for e in (emails_atuais_grupo or []))
 
     itens = []
     for idx, (url_post, texto_card) in enumerate(cards[:4]):
@@ -934,9 +948,12 @@ def buscar_edicoes_faltantes_na_web(
     get=requests.get,
     caminho_controle_fontes=None,
     pares_fontes=None,
+    caminho_controle_noticias=None,
+    forcar_pares=False,
+    agora=None,
 ):
-    """Dupla verificação: para cada fonte externa sem e-mail não lido hoje, checa no site oficial
-    se saiu edição com data mais recente que o último registro salvo em `controle_fontes.json` / `pasta_resultados`.
+    """Dupla verificação: para cada fonte externa sem e-mail não lido hoje (e feeds RSS nativos),
+    checa nos sites/feeds oficiais se há edições ou notícias mais recentes que o controle local.
     """
     pasta_resultados = pasta_resultados or config.RESULTADOS_DIR
     fontes_web = fontes_web if fontes_web is not None else config.FONTES_WEB
@@ -950,7 +967,18 @@ def buscar_edicoes_faltantes_na_web(
             caminho_controle_fontes = config.CONTROLE_FONTES_PATH
         else:
             caminho_controle_fontes = Path(pasta_resultados) / "controle_fontes.json"
+    if caminho_controle_noticias is None:
+        if Path(pasta_resultados).resolve() == Path(config.RESULTADOS_DIR).resolve():
+            caminho_controle_noticias = config.CONTROLE_NOTICIAS_PATH
+        else:
+            caminho_controle_noticias = Path(pasta_resultados) / "controle_noticias.json"
     controle_fontes = carregar_controle_fontes(caminho_controle_fontes)
+
+    agora_brt = agora or datetime.datetime.now(_FUSO_BRT)
+    if agora_brt.tzinfo is not None:
+        agora_brt = agora_brt.astimezone(_FUSO_BRT)
+    else:
+        agora_brt = agora_brt.replace(tzinfo=_FUSO_BRT)
 
     fontes_pareadas = {
         f.lower() for par in (pares_fontes or []) for f in (par.get("fontes") or [])
@@ -964,12 +992,15 @@ def buscar_edicoes_faltantes_na_web(
     grupos_map = agrupar_emails(emails_atuais, mapeamento)
     grupos_presentes = set(grupos_map.keys())
     titulos_presentes = {mapeamento.get(c, c) for c in grupos_presentes}
-    logger.info("[cyan]🔎 [Web] Verificando nos sites oficiais se alguma edição de hoje não chegou por e-mail...[/cyan]")
+    logger.info("[cyan]🔎 [Web] Verificando nos sites e feeds oficiais se há edições ou notícias novas...[/cyan]")
 
     recuperados = []
+    rss_aguardando_hora = []
+    rss_ja_extraidos_hoje = []
     for chave, cfg_web in fontes_web.items():
         titulo_base = mapeamento.get(chave, chave)
         chave_low = chave.lower()
+        forcado_filtro = False
         if filtros_grupo:
             termos_match = [chave_low, titulo_base.lower()] + parceiros_por_fonte.get(chave_low, [])
             for alias, dest in _ALIASES_PREFIXO.items():
@@ -977,14 +1008,17 @@ def buscar_edicoes_faltantes_na_web(
                     termos_match.append(alias)
             if not any(f.lower() in termo for f in filtros_grupo for termo in termos_match):
                 continue
+            forcado_filtro = True
 
         emails_grupo = grupos_map.get(chave, [])
+        tipo = (cfg_web.get("tipo") or "").lower()
         eh_pareada = chave_low in fontes_pareadas
         esperado_dia = 2 if chave == "the news" else 1
-        if len(emails_grupo) >= esperado_dia:
-            continue
-        if not eh_pareada and esperado_dia == 1 and titulo_base in titulos_presentes:
-            continue
+        if tipo != "rss":
+            if len(emails_grupo) >= esperado_dia:
+                continue
+            if not eh_pareada and esperado_dia == 1 and titulo_base in titulos_presentes:
+                continue
 
         reg_fonte = controle_fontes.get(chave_low) or {}
         ultima_data_str = reg_fonte.get("ultima_data") or ""
@@ -997,11 +1031,52 @@ def buscar_edicoes_faltantes_na_web(
         if ultima_data is None:
             ultima_data = ultima_data_extraida_local(pasta_resultados, titulo_base)
 
+        if tipo == "rss":
+            forcar_rss = forcar_pares or forcado_filtro
+            hora_min = cfg_web.get("hora_minima") or ""
+            if not forcar_rss and hora_min and not janela_horaria_liberada(hora_min, agora_brt):
+                rss_aguardando_hora.append((titulo_base, hora_min))
+                continue
+            max_por_dia = int(cfg_web.get("max_por_dia", 0) or 0)
+            if not forcar_rss and max_por_dia >= 1 and ultima_data == agora_brt.date():
+                rss_ja_extraidos_hoje.append(titulo_base)
+                continue
+
+            chaves_vistas, _, _ = carregar_historico_noticias(
+                chave_low,
+                titulo_base,
+                gmail_service=None,
+                caminho_controle=caminho_controle_noticias,
+                pasta_resultados=pasta_resultados,
+                ultima_data=ultima_data,
+            )
+            for e_ant in emails_grupo:
+                for it in extrair_noticias_email(e_ant):
+                    chaves_vistas.add(it["chave"])
+                    cu = normalizar_chave_url(it.get("url", ""))
+                    if cu:
+                        chaves_vistas.add(cu)
+            try:
+                novos = coletar_feed_rss(
+                    chave,
+                    titulo_base,
+                    cfg_web,
+                    chaves_vistas=chaves_vistas,
+                    ultima_data=ultima_data,
+                    get=get,
+                    agora=agora_brt,
+                )
+            except Exception as e:
+                logger.warning(f"[yellow]  ⚠ [RSS] Não foi possível verificar '{escape(titulo_base)}': {escape(str(e))}[/yellow]")
+                continue
+            if novos:
+                recuperados.extend(novos)
+            continue
+
         urls_processadas = set(reg_fonte.get("urls") or ())
         datas_necessarias = _datas_par_necessarias(chave_low, list(emails_atuais) + recuperados, mapeamento, pares_fontes)
         permitir_mesma_data = eh_pareada and not reg_fonte
 
-        tipo = (cfg_web.get("tipo") or "").lower()
         arquivo_url = cfg_web.get("arquivo_url") or ""
         if not arquivo_url:
             continue
@@ -1036,6 +1111,20 @@ def buscar_edicoes_faltantes_na_web(
             recuperados.extend(novos)
             if not eh_pareada and len(emails_grupo) + len(novos) >= esperado_dia:
                 titulos_presentes.add(titulo_base)
+
+    if rss_aguardando_hora:
+        nomes_h = ", ".join(t for t, _ in rss_aguardando_hora)
+        hora_ref = rss_aguardando_hora[0][1]
+        logger.info(
+            f"[yellow]  ⏸ [RSS] Aguardando janela das {escape(hora_ref)}: {escape(nomes_h)} "
+            f"(use --grupo ou --forcar-pares para antecipar)[/yellow]"
+        )
+    if rss_ja_extraidos_hoje:
+        nomes_j = ", ".join(rss_ja_extraidos_hoje)
+        logger.info(
+            f"[dim]  ⏸ [RSS] Já extraído(s) hoje ({agora_brt:%d/%m}): {escape(nomes_j)} "
+            f"— novas notícias acumulando para amanhã (use --grupo ou --forcar-pares para forçar)[/dim]"
+        )
 
     if not recuperados:
         logger.info("[dim]  ✔ [Web] Todas as fontes externas estão em dia com os arquivos locais.[/dim]")
@@ -1822,6 +1911,58 @@ class Pipeline:
 
         return configs_par, chaves_consumidas
 
+    def _aguardar_edicao_night_sozinha(self, chave, titulo_base, emails_grupo):
+        """Quando 'the news' (Boletim Fora de Ordem) traz apenas a edição noturna (NIGHT),
+        pergunta ao usuário se quer extrair sozinha agora ou aguardar a edição da manhã do dia seguinte.
+        Em modo não interativo (--sem-interacao), mantém em stand by até expirar (1 dia após a manhã esperada).
+        """
+        if (chave or "").lower() != "the news" or not emails_grupo:
+            return False
+        if not all(_eh_edicao_night(e) for e in emails_grupo):
+            return False
+        if self.opcoes.urls or self.opcoes.forcar_pares:
+            return False
+
+        hoje = self._hoje_ref or datetime.date.today()
+        datas_validas = [d for d in (_extrair_data_item(e) for e in emails_grupo) if d is not None]
+        dt_night = max(datas_validas) if datas_validas else hoje
+        data_esperada = dt_night + datetime.timedelta(days=1)
+        expira_em = data_esperada + datetime.timedelta(days=1)
+        expirado = (hoje - data_esperada).days >= 1
+
+        if self.opcoes.interativo:
+            resposta = self._perguntar(
+                f"\n▶ {titulo_base}: encontrada apenas a edição noturna ({dt_night:%d/%m}), "
+                f"que normalmente faz par com a edição da manhã de {data_esperada:%d/%m}. "
+                f"Extrair sozinha agora [S] ou aguardar o dia seguinte [N]? (s/N): "
+            )
+            if resposta.strip().lower() == "s":
+                return False
+        elif expirado:
+            logger.info(
+                f"\n[yellow]⏰ Liberando {escape(titulo_base)} (edição noturna {dt_night:%d/%m}) sem par: "
+                f"stand by expirado (edição da manhã de {data_esperada:%d/%m} não saiu)[/yellow]"
+            )
+            return False
+
+        self.em_standby.append(
+            ItemStandBy(
+                titulo_base=titulo_base,
+                fonte_recebida="the news night",
+                data_recebida=dt_night,
+                aguardando="the news manhã",
+                data_esperada=data_esperada,
+                expira_em=expira_em,
+            )
+        )
+        tem_gmail = any(e.get("id") for e in emails_grupo)
+        detalhe_guarda = "E-mail mantido não lido." if tem_gmail else "Edição não marcada como extraída."
+        logger.info(
+            f"[yellow]⏸ {escape(titulo_base)} em stand by: chegou apenas a edição noturna ({dt_night:%d/%m}), "
+            f"aguardando a edição da manhã ({data_esperada:%d/%m}). {detalhe_guarda}[/yellow]"
+        )
+        return True
+
     def preparar_grupos(self, emails):
         self.em_standby = []
         grupos = agrupar_emails(emails, config.MAPEAMENTO_PREFIXOS)
@@ -1839,6 +1980,9 @@ class Pipeline:
                 titulo_base, nome_final = nome_fallback(chave)
 
             if not self._corresponde_filtro([chave], titulo_base):
+                continue
+
+            if self._aguardar_edicao_night_sozinha(chave, titulo_base, emails_grupo):
                 continue
 
             if chave in config.MAPEAMENTO_PREFIXOS:
@@ -2528,8 +2672,15 @@ def executar(opcoes):
         emails = buscar_emails(gmail_service)
         logger.info(f"[bold]📬 {len(emails)} e-mail(s) não lido(s) encontrado(s)[/bold]")
         if opcoes.verificar_web and config.VERIFICAR_FONTES_WEB:
-            console.rule("[bold cyan]② Dupla verificação nos sites oficiais · edições que não chegaram por e-mail[/bold cyan]")
-            emails.extend(buscar_edicoes_faltantes_na_web(emails, config.RESULTADOS_DIR, opcoes.grupos))
+            console.rule("[bold cyan]② Dupla verificação nos sites e feeds oficiais · edições e RSS[/bold cyan]")
+            emails.extend(
+                buscar_edicoes_faltantes_na_web(
+                    emails,
+                    config.RESULTADOS_DIR,
+                    opcoes.grupos,
+                    forcar_pares=opcoes.forcar_pares,
+                )
+            )
     if not emails:
         console.print(Panel("[yellow]Nada para processar agora: nenhum e-mail novo e todas as fontes em dia.[/yellow]",
                             border_style="yellow", expand=False))

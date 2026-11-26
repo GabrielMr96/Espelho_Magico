@@ -10,6 +10,7 @@ import json
 import os
 import re
 import threading
+import urllib.parse
 from pathlib import Path
 
 from bs4 import BeautifulSoup
@@ -18,9 +19,10 @@ from . import config
 from .gmail_client import buscar_emails_anteriores
 from .log import escape, logger
 
-MAX_HISTORICO_POR_PROGRAMA = 500
+MAX_HISTORICO_POR_PROGRAMA = 2000
 _FUSO_BRT = datetime.timezone(datetime.timedelta(hours=-3))
 _CONTROLE_LOCK = threading.Lock()
+_PARAMS_RASTREIO = {"fbclid", "gclid", "mc_cid", "mc_eid", "ref", "source"}
 
 _RE_DATA_HORA_NOTICIA = re.compile(
     r"^\s*(\d{1,2})/(\d{1,2})/(\d{4})\s*(?:[àa]s|[-–,])?\s*(\d{1,2}):(\d{2})(?::(\d{2}))?\s*$",
@@ -56,6 +58,48 @@ def normalizar_chave_noticia(titulo, data_hora):
     return f"{t_norm}|{dh_norm}"
 
 
+def normalizar_url_noticia(url):
+    """Normaliza a URL canônica de uma notícia (minúscula no host, sem fragmento, tracking ou barra final)."""
+    bruto = (url or "").strip()
+    if not bruto:
+        return ""
+    try:
+        p = urllib.parse.urlsplit(bruto)
+    except Exception:
+        return bruto.lower().rstrip("/")
+    if not p.scheme or not p.netloc:
+        return bruto.lower().rstrip("/")
+    esquema = p.scheme.lower()
+    host = p.netloc.lower()
+    caminho = re.sub(r"/+", "/", p.path or "").rstrip("/") or "/"
+    params = [
+        (k, v)
+        for k, v in urllib.parse.parse_qsl(p.query, keep_blank_values=False)
+        if not k.lower().startswith("utm_") and k.lower() not in _PARAMS_RASTREIO
+    ]
+    query = urllib.parse.urlencode(params)
+    return urllib.parse.urlunsplit((esquema, host, caminho, query, ""))
+
+
+def normalizar_chave_url(url):
+    """Gera a chave prefixada `url:<canonica>` usada junto às chaves `título|data_hora` em `chaves_vistas`."""
+    norm = normalizar_url_noticia(url)
+    return f"url:{norm}" if norm else ""
+
+
+def _extrair_url_card(container, h2):
+    """Obtém a URL da notícia a partir de `data-url` no card ou `<a href>` dentro do `<h2>`."""
+    if container is not None:
+        data_url = (container.get("data-url") or "").strip()
+        if data_url:
+            return normalizar_url_noticia(data_url)
+    if h2 is not None:
+        a = h2.find("a", href=True)
+        if a and a.get("href"):
+            return normalizar_url_noticia(a["href"])
+    return ""
+
+
 def _container_card_html(h2, h2s_datados):
     """Devolve o <div>/<article> individual do card da notícia, evitando contêineres com múltiplos cards."""
     atual = h2.parent
@@ -69,7 +113,7 @@ def _container_card_html(h2, h2s_datados):
 
 
 def _mapear_cards_html(soup):
-    """Localiza pares (card_tag, titulo, data_hora) no HTML dos feeds de notícias."""
+    """Localiza tuplas (card_tag, titulo, data_hora, url) no HTML dos feeds de notícias."""
     candidatos = []
     for h2 in soup.find_all("h2"):
         p_dt = h2.find_next_sibling("p")
@@ -87,7 +131,8 @@ def _mapear_cards_html(soup):
     for h2, titulo, dt_txt in candidatos:
         container = _container_card_html(h2, h2s_datados)
         if container is not None:
-            cards.append((container, titulo, dt_txt))
+            url = _extrair_url_card(container, h2)
+            cards.append((container, titulo, dt_txt, url))
     return cards
 
 
@@ -112,7 +157,7 @@ def _extrair_noticias_markdown(texto):
 
 
 def extrair_noticias_email(email_item):
-    """Extrai a lista de dicts `{titulo, data_hora, chave}` contida em um e-mail."""
+    """Extrai a lista de dicts `{titulo, data_hora, chave, url}` contida em um e-mail ou feed."""
     conteudo = (email_item or {}).get("conteudo_html") or ""
     if not conteudo:
         return []
@@ -121,8 +166,13 @@ def extrair_noticias_email(email_item):
         cards = _mapear_cards_html(soup)
         if cards:
             return [
-                {"titulo": titulo, "data_hora": dt_txt, "chave": normalizar_chave_noticia(titulo, dt_txt)}
-                for _, titulo, dt_txt in cards
+                {
+                    "titulo": titulo,
+                    "data_hora": dt_txt,
+                    "chave": normalizar_chave_noticia(titulo, dt_txt),
+                    **({"url": url} if url else {}),
+                }
+                for _, titulo, dt_txt, url in cards
             ]
 
     _, inicios = _extrair_noticias_markdown(conteudo)
@@ -133,7 +183,7 @@ def extrair_noticias_email(email_item):
 
 
 def filtrar_noticias_repetidas_html(html, chaves_vistas):
-    """Remove cards de notícias cujo (título, data/hora) já está em `chaves_vistas`.
+    """Remove cards de notícias cujo (título, data/hora) ou URL já está em `chaves_vistas`.
 
     Atualiza `chaves_vistas` com as notícias mantidas para evitar duplicatas no mesmo lote.
     Retorna `(novo_html, removidas, mantidas, total_cards)`.
@@ -144,14 +194,20 @@ def filtrar_noticias_repetidas_html(html, chaves_vistas):
         return html, [], [], 0
 
     removidas, mantidas = [], []
-    for container, titulo, dt_txt in cards:
+    for container, titulo, dt_txt, url in cards:
         chave = normalizar_chave_noticia(titulo, dt_txt)
-        if chave in chaves_vistas:
-            removidas.append({"titulo": titulo, "data_hora": dt_txt, "chave": chave})
+        chave_url = normalizar_chave_url(url)
+        item_dict = {"titulo": titulo, "data_hora": dt_txt, "chave": chave}
+        if url:
+            item_dict["url"] = url
+        if chave in chaves_vistas or (chave_url and chave_url in chaves_vistas):
+            removidas.append(item_dict)
             container.decompose()
         else:
             chaves_vistas.add(chave)
-            mantidas.append({"titulo": titulo, "data_hora": dt_txt, "chave": chave})
+            if chave_url:
+                chaves_vistas.add(chave_url)
+            mantidas.append(item_dict)
     return str(soup), removidas, mantidas, len(cards)
 
 
@@ -283,11 +339,22 @@ def carregar_historico_noticias(
         dados = _ler_arquivo_controle(caminho)
     bloco = dados.get(chave_low) or {}
     itens_salvos = bloco.get("itens") or []
-    chaves_vistas = {
-        item.get("chave") or normalizar_chave_noticia(item.get("titulo", ""), item.get("data_hora", ""))
-        for item in itens_salvos
-        if item.get("chave") or item.get("titulo")
-    }
+    chaves_vistas = set()
+    for item in itens_salvos:
+        chave_item = item.get("chave") or (
+            normalizar_chave_noticia(item.get("titulo", ""), item.get("data_hora", ""))
+            if item.get("titulo")
+            else ""
+        )
+        if chave_item:
+            chaves_vistas.add(chave_item)
+        chave_url = normalizar_chave_url(item.get("url", ""))
+        if chave_url:
+            chaves_vistas.add(chave_url)
+    for url_salva in bloco.get("urls") or []:
+        chave_url = normalizar_chave_url(url_salva)
+        if chave_url:
+            chaves_vistas.add(chave_url)
     if bloco.get("inicializado"):
         return chaves_vistas, [], False
 
@@ -301,6 +368,9 @@ def carregar_historico_noticias(
     )
     for item in itens_bootstrap:
         chaves_vistas.add(item["chave"])
+        chave_url = normalizar_chave_url(item.get("url", ""))
+        if chave_url:
+            chaves_vistas.add(chave_url)
     return chaves_vistas, itens_bootstrap, bool(gmail_service)
 
 
@@ -310,36 +380,62 @@ def registrar_noticias_extraidas(
     itens_bootstrap=None,
     marcar_inicializado=True,
     caminho_controle=None,
+    urls_extras=None,
 ):
-    """Persiste de forma thread-safe e atômica os itens extraídos para `chave_grupo`."""
+    """Persiste de forma thread-safe e atômica os itens e URLs extraídos para `chave_grupo`."""
     chave_low = (chave_grupo or "").strip().lower()
     caminho = Path(caminho_controle or config.CONTROLE_NOTICIAS_PATH)
     combinar = list(itens_bootstrap or []) + list(itens_novos or [])
-    if not combinar and not marcar_inicializado:
+    extras_url = [normalizar_url_noticia(u) for u in (urls_extras or []) if normalizar_url_noticia(u)]
+    if not combinar and not extras_url and not marcar_inicializado:
         return
 
     with _CONTROLE_LOCK:
         dados = _ler_arquivo_controle(caminho)
-        bloco = dados.get(chave_low) or {"inicializado": False, "itens": []}
+        bloco = dados.get(chave_low) or {"inicializado": False, "itens": [], "urls": []}
         atuais = list(bloco.get("itens") or [])
         vistos = {item.get("chave") for item in atuais if item.get("chave")}
+        urls_atuais = []
+        urls_vistas = set()
+        for u in list(bloco.get("urls") or []) + [it.get("url", "") for it in atuais]:
+            u_norm = normalizar_url_noticia(u)
+            if u_norm and u_norm not in urls_vistas:
+                urls_vistas.add(u_norm)
+                urls_atuais.append(u_norm)
+
+        for u_norm in extras_url:
+            if u_norm not in urls_vistas:
+                urls_vistas.add(u_norm)
+                urls_atuais.append(u_norm)
 
         for item in combinar:
             chave = item.get("chave") or normalizar_chave_noticia(item.get("titulo", ""), item.get("data_hora", ""))
+            url_norm = normalizar_url_noticia(item.get("url", ""))
+            if url_norm and url_norm not in urls_vistas:
+                urls_vistas.add(url_norm)
+                urls_atuais.append(url_norm)
             if not chave or chave in vistos:
                 continue
             vistos.add(chave)
-            atuais.append({
+            registro = {
                 "titulo": item.get("titulo", ""),
                 "data_hora": item.get("data_hora", ""),
                 "chave": chave,
-            })
+            }
+            if url_norm:
+                registro["url"] = url_norm
+            atuais.append(registro)
 
         if len(atuais) > MAX_HISTORICO_POR_PROGRAMA:
             atuais = atuais[-MAX_HISTORICO_POR_PROGRAMA:]
+        if len(urls_atuais) > MAX_HISTORICO_POR_PROGRAMA:
+            urls_atuais = urls_atuais[-MAX_HISTORICO_POR_PROGRAMA:]
 
-        dados[chave_low] = {
+        novo_bloco = {
             "inicializado": bool(bloco.get("inicializado") or marcar_inicializado),
             "itens": atuais,
         }
+        if urls_atuais:
+            novo_bloco["urls"] = urls_atuais
+        dados[chave_low] = novo_bloco
         _escrever_arquivo_controle(caminho, dados)

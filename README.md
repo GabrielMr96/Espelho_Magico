@@ -4,11 +4,12 @@ Automação que lê newsletters do Gmail (marcador `Espelho_Magico`), arranca o 
 
 ## 🔄 Fluxo de Processamento
 
-1. **Busca Resiliente no Gmail + Dupla Verificação Web**:
+1. **Busca Resiliente no Gmail + Dupla Verificação Web + Feeds RSS Nativos**:
    - Busca e-mails **não lidos** no marcador configurado (`Espelho_Magico`), com pacing e backoff automático para respeitar limites do Google Cloud (Rate Limit 403).
    - Para as newsletters externas configuradas em `fontes_web` (`the news`, `tns money`, `MoneyDrops`, `tns health`, `tns sports`, `tns business`, `TechDrops`, `tns better work`, `aidrops` e `peak`), se algum e-mail não chegar no Gmail, verifica automaticamente nos arquivos públicos dos sites oficiais se saiu edição nova (com controle individual por fonte em `controle_fontes.json`).
+   - Para **Hackeando o Problema** (Tecnoblog Segurança), **Pipoca Vencida** (O Vício Filmes + Séries + Streaming) e **Controle Quebrado** (O Vício Games), lê os feeds RSS diretamente com **paginação automática** (`?paged=N`), deduplicação dupla (URL canônica + título/data-hora em `controle_noticias.json`), janela horária configurável (`hora_minima: "16:50"`) e trava de 1 edição/dia (bypass via `--grupo` ou `--forcar-pares`).
    - Também permite extração avulsa diretamente via `--url <link>`.
-2. **Agrupamento Inteligente + Pares com Stand By**: Agrupa mensagens por newsletter (mapeamento em `config.json`), calcula a numeração sequencial da próxima edição e concatena automaticamente pares configurados (`tns money` + `MoneyDrops` em ter/qui no *Fechamento de Caixa*; `TechDrops` seg/qua + `tns business` ter/qui no *Ata de Reunião*, com *stand by* automático até o par chegar, `tns better work` independente e filtro anti-repetição na edição de sexta do `TechDrops`).
+2. **Agrupamento Inteligente + Pares com Stand By**: Agrupa mensagens por newsletter (mapeamento em `config.json`), calcula a numeração sequencial da próxima edição e concatena automaticamente pares configurados (`tns money` + `MoneyDrops` em ter/qui no *Fechamento de Caixa*; `TechDrops` seg/qua + `tns business` ter/qui no *Ata de Reunião*, com *stand by* automático até o par chegar, `tns better work` independente e filtro anti-repetição na edição de sexta do `TechDrops`). No *Boletim Fora de Ordem*, se apenas a edição noturna (`the news NIGHT`) estiver presente sem a manhã seguinte, pergunta se deseja extrair sozinha ou aguardar em *stand by* para o dia seguinte.
 3. **Pré-limpeza HTML → Markdown**: Converte tabelas de layout para blocos enxutos, preserva linhas de tabelas de dados (cotações/mercados), remove menus/rodapés web (`<nav>`, `<footer>`, `<aside>`), blocos de "Leia mais sobre..." e créditos fotográficos puros (`Manoella Mello | Globo`, `Fortune | Getty Images`), economizando até 90% dos tokens antes do envio à IA.
 4. **Extração Literal com IA (Fatiamento Inteligente + Segunda Passagem Seletiva)**:
    - Extrai o conteúdo sem resumir ou parafrasear usando o Gemini (`gemini-4-hydrogen` como prioridade no tier gratuito, com rotação de chaves, pausa curta de retentativa no tier principal `PAUSA_ANTES_DOWNGRADE` antes de cair para modelos `lite`/`gemma` em picos de `503`, e fallback para provedor alternativo `ALT_*` ou Perplexity com busca web desativada).
@@ -70,7 +71,8 @@ espelho_magico/
 ├── html_cleaner.py        # pré-limpeza HTML → Markdown e filtro de créditos
 ├── llm.py                 # rotação de chaves e fallback Gemini / Perplexity
 ├── futebol.py             # placares ESPN com validação e controle de datas
-├── deduplicacao.py        # remoção de notícias repetidas (título + data/hora)
+├── deduplicacao.py        # remoção de notícias repetidas (URL + título/data-hora)
+├── rss_client.py          # coletor RSS nativo com paginação e janela horária
 ├── pipeline.py            # agrupamento, extração, painel visual e publicação
 ├── validacao.py           # dupla verificação das regras e adaptação para podcast
 └── prompts/               # templates de prompts para o Gemini
