@@ -22,7 +22,7 @@ GUIDELINES
 
 2. DESCRIPTION:
 - 120-Char Rule (CRITICAL): opening sentence shows in Spotify preview — hit immediately with sharpest jab + main entity.
-- Hook: 1 short paragraph (2–3 lines) of dive-bar cynicism linking today's absurdities.
+- Hook: 1 short paragraph (2–3 lines) of dive-bar cynicism matching each story's slang (never force Ottawa/taxes into light tech/culture/sports), with a touch of clever innuendo or borderline-nonsense humour.
 - Topics: 3 or 4 one-line bullets (4 if sources support it, 3 on short rundowns — never invent), starting with "• " with a blank line between EVERY bullet.
 - Varied CTA: demand 5 stars on Spotify, a poll vote and a follow (Central do Caos network — NEVER translate "Central do Caos") with original irony and cynical Canadian touches (grocery cartels, CRA, hydro bills, Timmies, loonies, rent), never insulting listeners or repeating jokes.
 

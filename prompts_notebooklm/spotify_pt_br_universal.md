@@ -22,7 +22,7 @@ REGRAS
 
 2. DESCRIÇÃO:
 - 120 Caracteres (CRÍTICO): a 1ª frase aparece no preview do Spotify — abra direto com a piada mais ácida e o alvo principal.
-- Gancho: 1 parágrafo curto (2–3 linhas) de caos puro em tom de mesa de bar.
+- Gancho: 1 parágrafo curto (2–3 linhas) de caos puro em tom de mesa de bar, adaptando gírias e clima ao nicho do programa (esporte, games, cinema, escritório, mercado — sem puxar política onde não existe), valendo pitada de humor nonsense ou duplo sentido sagaz.
 - Tópicos: 3 ou 4 linhas curtíssimas (4 quando houver pauta; 3 em edições curtas, sem inventar assunto) começando com "• " e SEMPRE com 1 linha em branco entre cada tópico.
 - CTA Variado: cobre 5 estrelas, voto na enquete do Spotify, follow no programa e seguir @centraldocaos.pod no Instagram com ironia/chantagem leve (sem xingar o ouvinte e sem repetir a mesma piada).
 
