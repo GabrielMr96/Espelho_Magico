@@ -1111,6 +1111,49 @@ def test_boletim_night_sozinha_pergunta_e_respeita_standby(tmp_path):
     assert len(cfgs_manha) == 1 and not pipe_manha.em_standby and not pipe_manha._perguntas
 
 
+def test_consolidacao_nao_propaga_transitivo_nem_funde_por_plataforma_e_limpa_fonte():
+    from espelho_magico.html_cleaner import limpar_linhas
+    from espelho_magico.pipeline import consolidar_secoes_mesmo_assunto_detalhado
+
+    md = (
+        "# 27 de novembro de 2026\n\n"
+        "## Marvel Studios já está desenvolvendo nova série animada para o Disney+\n\n"
+        "Segundo o insider Daniel RPK, a Marvel prepara uma animação inédita para o Disney+ em janeiro de 2027, "
+        "mantendo o foco em narrativas independentes na plataforma de streaming da Casa do Mickey.\n\n"
+        "## Star Wars: Filme-evento de Dave Filoni vai virar série para o Disney+, diz rumor\n\n"
+        "Segundo o insider Daniel RPK, a Lucasfilm avalia transformar Herdeiro do Império em série no Disney+ em janeiro de 2027, "
+        "reunindo personagens do Mandoverso na plataforma de streaming.\n\n"
+        "## Vingadores: Doutor Destino destaca Tocha Humana em ação\n\n"
+        "Um novo teaser da Marvel Studios para Vingadores: Doutor Destino destaca Steve Rogers, Tocha Humana e Victor Von Doom no blockbuster das bilheterias.\n\n"
+        "## Denis Villeneuve revela decepção com estreia simultânea entre Vingadores: Doutor Destino e Duna: Parte 3\n\n"
+        "Denis Villeneuve comentou a competição contra a Marvel em Vingadores: Doutor Destino e Duna: Parte 3 na disputa das bilheterias do blockbuster.\n\n"
+        "**Fonte**: Time Magazine\n\n"
+        "## Denis Villeneuve promete honrar as tradições de 007\n\n"
+        "Escolhido pela Amazon MGM Studios, Denis Villeneuve afirmou à Time Magazine que vai manter carros velozes, martini e Bond 26.\n\n"
+        "**Fonte:** Time Magazine\n\n"
+        "## Giro Rápido\n\n"
+        "- Cotado para Fazenda, Trabuco vai a Brasília para reunião com Lula.\n"
+        "- FIFA sofre ataque hacker e tem dados vazados.\n\n"
+        "## Quem Vai Comandar a Fazenda\n\n"
+        "Após reunião em Brasília com Lula, o banqueiro Luiz Carlos Trabuco aceitou o convite para assumir o Ministério da Fazenda.\n"
+    )
+    sanitizado = sanitizar_markdown_final(md, consolidar=False)
+    assert "Fonte" not in sanitizado
+    assert "Fonte" not in limpar_linhas("Texto normal.\n\n**Fonte:** Oricon\n")
+
+    consolidado, info = consolidar_secoes_mesmo_assunto_detalhado(sanitizado)
+    # Star Wars NÃO pode ser engolida sob Marvel por causa de 'Disney+' / 'Daniel RPK'
+    assert "## Star Wars: Filme-evento de Dave Filoni vai virar série para o Disney+, diz rumor" in consolidado
+    # 007 NÃO pode ser engolida sob Vingadores transitivamente via Denis Villeneuve
+    assert "## Denis Villeneuve promete honrar as tradições de 007" in consolidado
+    # Duna vs Vingadores continua concatenada sob Vingadores
+    assert "### Denis Villeneuve revela decepção com estreia simultânea" in consolidado
+    # Bullet repetido de Trabuco no Giro Rápido é absorvido; bullet inédito da FIFA permanece
+    assert "Cotado para Fazenda, Trabuco" not in consolidado
+    assert "FIFA sofre ataque hacker" in consolidado
+
+
+
 
 
 

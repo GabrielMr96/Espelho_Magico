@@ -1153,7 +1153,7 @@ _RE_CREDITO_RESIDUAL = re.compile(
     re.I,
 )
 _RE_LINHA_CREDITO_SOLTO = re.compile(
-    r"^(?:source|photo|image|credit|illustration|artwork(?:\s+by)?|foto|cr[eé]dito|imagem)\s*:\s*[^\n]{1,80}$",
+    r"^\*{0,2}(?:source|photo|image|credit|illustration|artwork(?:\s+by)?|foto|cr[eé]dito|imagem|fonte)\*{0,2}\s*:\*{0,2}\s*[^\n]{1,80}$",
     re.I,
 )
 _RE_APROFUNDE = re.compile(
@@ -1293,14 +1293,22 @@ _STOPWORDS_TOPICO = _STOPWORDS_RESUMO | {
     "diretora", "atriz", "estúdio", "estudio", "temporada", "lançamento", "lancamento",
     "estreia", "história", "historia", "detalhes", "versão", "versao", "franquia",
     "cinema", "cinemas", "público", "publico", "texto", "vídeo", "video", "trailer",
-    "imagem", "imagens", "partes", "melhores",
+    "imagem", "imagens", "partes", "melhores", "disney", "netflix", "streaming",
+    "studios", "rumor", "rumores", "insider", "scoop", "projeto", "projetos",
+    "evento", "universo", "desenvolvendo", "desenvolvimento", "produção", "producao",
+    "animada", "animado", "animação", "animacao", "confirmado", "confirmada",
+    "suposto", "supostamente", "plataforma", "plataformas", "janeiro", "fevereiro",
+    "março", "marco", "abril", "junho", "julho", "agosto", "setembro", "outubro",
+    "novembro", "dezembro",
 }
 
 _SECOES_GIRO = (
     "need to know", "giro de notícias", "giro de noticias", "um giro pelas notícias",
-    "um giro pelas noticias", "giro pelas notícias", "tour de manchetes", "tour de headlines",
-    "headlines", "radar", "radar headlines", "quick takes", "quick picks",
-    "destaques rápidos", "destaques rapidos",
+    "um giro pelas noticias", "giro pelas notícias", "giro rápido", "giro rapido",
+    "tour de manchetes", "tour de headlines", "tour pelas principais notícias",
+    "tour pelas principais noticias", "headlines", "radar", "radar headlines",
+    "quick takes", "quick picks", "destaques rápidos", "destaques rapidos",
+    "mundo afora", "brasil adentro",
 )
 
 _PREFIXOS_ESPECIAIS_NAO_FUNDIR = (
@@ -1475,8 +1483,6 @@ def consolidar_secoes_mesmo_assunto_detalhado(texto):
         if blocos_novos:
             extra_linhas = [f"### {tit}", ""] + "\n\n".join(blocos_novos).split("\n")
             alvo["linhas"] = conteudo_alvo + [""] + extra_linhas + (rabo_nov or rabo_alvo)
-            t_ant, c_ant = meta_norm[idx_alvo]
-            meta_norm[idx_alvo] = (t_ant | t_nov, c_ant | c_nov)
         elif rabo_nov and not rabo_alvo:
             alvo["linhas"] = conteudo_alvo + rabo_nov
         info["secoes_concatenadas"].append(f"{tit} → {alvo['titulo']}")

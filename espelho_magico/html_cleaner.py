@@ -42,7 +42,7 @@ _PADROES_LINHA = [
     r"(?i)^Boas-vindas às.*$",
     r"(?i)^.*Leia Online.*$",
     r"(?i)^\s*Read online\s*$",
-    r"(?i)^(?:Source|Photo|Image|Credit|Illustration|Artwork(?:\s+by)?)\s*:\s*[^\n]{1,80}$",
+    r"(?i)^\s*\*{0,2}(?:Source|Photo|Image|Credit|Illustration|Artwork(?:\s+by)?|Fonte)\*{0,2}\s*:\*{0,2}\s*[^\n]{1,80}$",
     r"(?i)^Assine a .* PRO para continuar lendo.*$",
     r"(?i)^Assinar e continuar lendo.*$",
     r"(?i)^.*Go Premium to keep reading.*$",
